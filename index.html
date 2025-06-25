@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4D Tesseract - Rain Background</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body, html {
+            height: 100%;
+            overflow: hidden;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 50%, #dee2e6 100%);
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        #canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #noise-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+            opacity: 0.05;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><defs><filter id="noise"><feflood flood-color="white"/><fecomponenttransfer><fefunca type="discrete" tablevalues="0 .5 0 1 0 .8 0 .2 0 .9"/></fecomponenttransfer><fecomposite operator="over" in2="SourceGraphic"/></filter></defs><rect width="100%" height="100%" filter="url(%23noise)"/></svg>') repeat;
+            animation: noise 0.2s infinite linear;
+        }
+        @keyframes noise {
+            0%, 100% { transform: translate(0, 0); }
+            10% { transform: translate(-1px, -1px); }
+            20% { transform: translate(1px, 1px); }
+            30% { transform: translate(-1px, 1px); }
+            40% { transform: translate(1px, -1px); }
+            50% { transform: translate(-1px, -1px); }
+            60% { transform: translate(1px, 1px); }
+            70% { transform: translate(-1px, 1px); }
+            80% { transform: translate(1px, -1px); }
+            90% { transform: translate(-1px, -1px); }
+        }
+        .tesseract-container {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: min(80vw, 80vh);
+            height: min(80vw, 80vh);
+            z-index: 10;
+        }
+        .edge {
+            position: absolute;
+            height: 1.5px;
+            transform-origin: 0 50%;
+            opacity: 0.9;
+            box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+        }
+        .info {
+            position: fixed;
+            top: 30px;
+            left: 30px;
+            color: rgba(108, 117, 125, 0.8);
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 100;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="noise-overlay"></div>
+    
+    <div class="info">
+        4D Tesseract (Hypercube)<br>
+        16 vertices, 32 edges<br>
+        Rotating in 4D space
+    </div>
+    
+    <div class="tesseract-container" id="container">
+        <!-- Edges will be created by JavaScript -->
+    </div>
+
+    <script>
+        class RainSystem {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.rainDrops = [];
+                this.particles = [];
+                this.time = 0;
+                this.resize();
+                this.init();
+                this.animate();
+                window.addEventListener('resize', () => this.resize());
+            }
+
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.width = this.canvas.width;
+                this.height = this.canvas.height;
+            }
+
+            init() {
+                // Create rain drops
+                for (let i = 0; i < 150; i++) {
+                    this.rainDrops.push({
+                        x: Math.random() * (this.width + 200) - 100,
+                        y: Math.random() * this.height - this.height,
+                        speed: Math.random() * 3 + 2,
+                        length: Math.random() * 20 + 10,
+                        opacity: Math.random() * 0.6 + 0.2,
+                        angle: Math.random() * 10 - 5, // slight angle variation
+                        drift: (Math.random() - 0.5) * 0.3 // horizontal drift
+                    });
+                }
+
+                // Create floating particles (reduced count since we have rain)
+                for (let i = 0; i < 30; i++) {
+                    this.particles.push({
+                        x: Math.random() * this.width,
+                        y: Math.random() * this.height,
+                        vx: (Math.random() - 0.5) * 0.5,
+                        vy: (Math.random() - 0.5) * 0.5,
+                        size: Math.random() * 2 + 1,
+                        opacity: Math.random() * 0.3 + 0.1,
+                        life: Math.random() * 1000
+                    });
+                }
+            }
+
+            updateRain() {
+                this.rainDrops.forEach(drop => {
+                    // Update position
+                    drop.y += drop.speed;
+                    drop.x += drop.drift;
+                    
+                    // Add subtle wind effect
+                    drop.drift += Math.sin(this.time * 0.01 + drop.x * 0.001) * 0.02;
+                    
+                    // Reset when off screen
+                    if (drop.y > this.height + drop.length) {
+                        drop.y = -drop.length - Math.random() * 100;
+                        drop.x = Math.random() * (this.width + 200) - 100;
+                        drop.drift = (Math.random() - 0.5) * 0.3;
+                    }
+                    
+                    // Wrap horizontally if drifted too far
+                    if (drop.x > this.width + 100) {
+                        drop.x = -100;
+                    } else if (drop.x < -100) {
+                        drop.x = this.width + 100;
+                    }
+                });
+            }
+
+            updateParticles() {
+                this.particles.forEach(particle => {
+                    // Physics simulation with damping
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    
+                    // Add some subtle movement
+                    particle.vy += Math.sin(particle.x * 0.01 + this.time * 0.02) * 0.01;
+                    particle.vx += Math.cos(particle.y * 0.01 + this.time * 0.015) * 0.01;
+                    
+                    // Damping
+                    particle.vx *= 0.999;
+                    particle.vy *= 0.999;
+                    
+                    // Boundary wrapping
+                    if (particle.x < 0) particle.x = this.width;
+                    if (particle.x > this.width) particle.x = 0;
+                    if (particle.y < 0) particle.y = this.height;
+                    if (particle.y > this.height) particle.y = 0;
+                    
+                    // Lifecycle
+                    particle.life++;
+                    if (particle.life > 2000) {
+                        particle.life = 0;
+                        particle.x = Math.random() * this.width;
+                        particle.y = Math.random() * this.height;
+                    }
+                });
+            }
+
+            drawRain() {
+                this.rainDrops.forEach(drop => {
+                    this.ctx.save();
+                    
+                    // Calculate end point of rain stripe
+                    const endX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length;
+                    const endY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length;
+                    
+                    // Draw rain stripe as a line
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(drop.x, drop.y);
+                    this.ctx.lineTo(endX, endY);
+                    
+                    // Create gradient for the rain stripe
+                    const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
+                    gradient.addColorStop(0, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                    gradient.addColorStop(0.5, `rgba(108, 117, 125, ${drop.opacity})`);
+                    gradient.addColorStop(1, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                    
+                    this.ctx.strokeStyle = gradient;
+                    this.ctx.lineWidth = 1;
+                    this.ctx.lineCap = 'round';
+                    this.ctx.stroke();
+                    
+                    this.ctx.restore();
+                });
+            }
+
+            drawParticles() {
+                this.particles.forEach(particle => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+                    this.ctx.fillStyle = `rgba(108, 117, 125, ${particle.opacity})`;
+                    this.ctx.fill();
+                });
+            }
+
+            animate() {
+                this.ctx.clearRect(0, 0, this.width, this.height);
+                
+                // Update and draw rain
+                this.updateRain();
+                this.drawRain();
+                
+                // Update and draw particles
+                this.updateParticles();
+                this.drawParticles();
+                
+                this.time += 1;
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        class Tesseract4D {
+            constructor(containerId) {
+                this.container = document.getElementById(containerId);
+                
+                // Define the 16 vertices of a tesseract in 4D space
+                this.originalVertices = [
+                    // Inner cube (w = -1)
+                    [-1, -1, -1, -1], // 0
+                    [ 1, -1, -1, -1], // 1
+                    [ 1,  1, -1, -1], // 2
+                    [-1,  1, -1, -1], // 3
+                    [-1, -1,  1, -1], // 4
+                    [ 1, -1,  1, -1], // 5
+                    [ 1,  1,  1, -1], // 6
+                    [-1,  1,  1, -1], // 7
+                    // Outer cube (w = 1)
+                    [-1, -1, -1,  1], // 8
+                    [ 1, -1, -1,  1], // 9
+                    [ 1,  1, -1,  1], // 10
+                    [-1,  1, -1,  1], // 11
+                    [-1, -1,  1,  1], // 12
+                    [ 1, -1,  1,  1], // 13
+                    [ 1,  1,  1,  1], // 14
+                    [-1,  1,  1,  1]  // 15
+                ];
+
+                // Define the 32 edges of a tesseract
+                this.edges = [
+                    // Inner cube edges (w = -1)
+                    [0, 1], [1, 2], [2, 3], [3, 0], // front face
+                    [4, 5], [5, 6], [6, 7], [7, 4], // back face
+                    [0, 4], [1, 5], [2, 6], [3, 7], // connecting edges
+                    // Outer cube edges (w = 1)
+                    [8, 9], [9, 10], [10, 11], [11, 8], // front face
+                    [12, 13], [13, 14], [14, 15], [15, 12], // back face
+                    [8, 12], [9, 13], [10, 14], [11, 15], // connecting edges
+                    // 4D connecting edges (inner to outer)
+                    [0, 8], [1, 9], [2, 10], [3, 11],
+                    [4, 12], [5, 13], [6, 14], [7, 15]
+                ];
+
+                // 4D rotation angles
+                this.rotXY = Math.random() * Math.PI * 2;
+                this.rotXZ = Math.random() * Math.PI * 2;
+                this.rotXW = Math.random() * Math.PI * 2;
+                this.rotYZ = Math.random() * Math.PI * 2;
+                this.rotYW = Math.random() * Math.PI * 2;
+                this.rotZW = Math.random() * Math.PI * 2;
+
+                // Rotation speeds for each 4D rotation plane
+                this.speedXY = 0.003 + Math.random() * 0.004;
+                this.speedXZ = 0.003 + Math.random() * 0.004;
+                this.speedXW = 0.003 + Math.random() * 0.004;
+                this.speedYZ = 0.003 + Math.random() * 0.004;
+                this.speedYW = 0.003 + Math.random() * 0.004;
+                this.speedZW = 0.003 + Math.random() * 0.004;
+
+                this.animate();
+            }
+
+            // 4D rotation in the XY plane
+            rotateXY(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x * cos - y * sin,
+                    x * sin + y * cos,
+                    z,
+                    w
+                ];
+            }
+
+            // 4D rotation in the XZ plane
+            rotateXZ(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x * cos - z * sin,
+                    y,
+                    x * sin + z * cos,
+                    w
+                ];
+            }
+
+            // 4D rotation in the XW plane
+            rotateXW(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x * cos - w * sin,
+                    y,
+                    z,
+                    x * sin + w * cos
+                ];
+            }
+
+            // 4D rotation in the YZ plane
+            rotateYZ(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x,
+                    y * cos - z * sin,
+                    y * sin + z * cos,
+                    w
+                ];
+            }
+
+            // 4D rotation in the YW plane
+            rotateYW(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x,
+                    y * cos - w * sin,
+                    z,
+                    y * sin + w * cos
+                ];
+            }
+
+            // 4D rotation in the ZW plane
+            rotateZW(point, angle) {
+                const [x, y, z, w] = point;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return [
+                    x,
+                    y,
+                    z * cos - w * sin,
+                    z * sin + w * cos
+                ];
+            }
+
+            // Apply all 6 possible 4D rotations
+            rotate4D(point) {
+                let rotated = point;
+                rotated = this.rotateXY(rotated, this.rotXY);
+                rotated = this.rotateXZ(rotated, this.rotXZ);
+                rotated = this.rotateXW(rotated, this.rotXW);
+                rotated = this.rotateYZ(rotated, this.rotYZ);
+                rotated = this.rotateYW(rotated, this.rotYW);
+                rotated = this.rotateZW(rotated, this.rotZW);
+                return rotated;
+            }
+
+            // Project 4D point to 3D, then to 2D
+            projectTo2D(point4D) {
+                const containerSize = Math.min(this.container.offsetWidth, this.container.offsetHeight);
+                const scale = containerSize * 0.15;
+                const centerX = this.container.offsetWidth / 2;
+                const centerY = this.container.offsetHeight / 2;
+
+                // First project 4D to 3D (perspective projection from 4D)
+                const distance4D = 4; // Distance from 4D "eye" to tesseract
+                const w = point4D[3];
+                const perspective4D = distance4D / (distance4D - w);
+                const x3D = point4D[0] * perspective4D;
+                const y3D = point4D[1] * perspective4D;
+                const z3D = point4D[2] * perspective4D;
+
+                // Then project 3D to 2D (orthographic projection)
+                return [
+                    centerX + x3D * scale,
+                    centerY - y3D * scale
+                ];
+            }
+
+            render() {
+                // Clear container
+                this.container.innerHTML = '';
+
+                // Apply 4D rotation to all vertices
+                const rotated4D = this.originalVertices.map(vertex => this.rotate4D(vertex));
+
+                // Project to 2D
+                const projected2D = rotated4D.map(vertex => this.projectTo2D(vertex));
+
+                // Create edges
+                this.edges.forEach((edge, index) => {
+                    const [startIdx, endIdx] = edge;
+                    const start = projected2D[startIdx];
+                    const end = projected2D[endIdx];
+                    
+                    const deltaX = end[0] - start[0];
+                    const deltaY = end[1] - start[1];
+                    const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                    const angle = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
+
+                    const edgeElement = document.createElement('div');
+                    edgeElement.className = 'edge';
+                    edgeElement.style.left = start[0] + 'px';
+                    edgeElement.style.top = start[1] + 'px';
+                    edgeElement.style.width = length + 'px';
+                    edgeElement.style.transform = `rotate(${angle}deg)`;
+
+                    // Color based on edge type for visual distinction - using grays that match the aesthetic
+                    if (index < 12) {
+                        // Inner cube edges - dark gray
+                        edgeElement.style.background = 'linear-gradient(90deg, #6c757d, #495057)';
+                    } else if (index < 24) {
+                        // Outer cube edges - medium gray
+                        edgeElement.style.background = 'linear-gradient(90deg, #adb5bd, #868e96)';
+                    } else {
+                        // 4D connecting edges - light gray
+                        edgeElement.style.background = 'linear-gradient(90deg, #dee2e6, #ced4da)';
+                    }
+
+                    this.container.appendChild(edgeElement);
+                });
+            }
+
+            animate() {
+                // Update all 4D rotation angles
+                this.rotXY += this.speedXY;
+                this.rotXZ += this.speedXZ;
+                this.rotXW += this.speedXW;
+                this.rotYZ += this.speedYZ;
+                this.rotYW += this.speedYW;
+                this.rotZW += this.speedZW;
+
+                this.render();
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        // Initialize when page loads
+        let rainSystem;
+        let tesseract;
+        
+        window.addEventListener('load', () => {
+            rainSystem = new RainSystem();
+            tesseract = new Tesseract4D('container');
+        });
+    </script>
+</body>
+</html>
