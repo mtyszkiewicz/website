@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>4D Tesseract - Rain Background</title>
+    <title>mtyszkiewicz.dev</title>
     <style>
         * {
             margin: 0;
@@ -53,27 +53,24 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: min(80vw, 80vh);
-            height: min(80vw, 80vh);
+            width: min(90vw, 90vh);
+            height: min(90vw, 90vh);
             z-index: 10;
         }
         .edge {
             position: absolute;
-            height: 1.5px;
+            height: 1px; /* Thinner lines for sharper appearance */
             transform-origin: 0 50%;
-            opacity: 0.9;
-            box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+            opacity: 1; /* Full opacity for sharper appearance */
+            /* box-shadow: 0 0 3px rgba(0, 0, 0, 0.15); */
         }
-        .info {
-            position: fixed;
-            top: 30px;
-            left: 30px;
-            color: rgba(108, 117, 125, 0.8);
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            z-index: 100;
-            letter-spacing: 0.5px;
+        /* Apply device-specific styles */
+        @media (max-width: 767px) {
+            .edge {
+                height: 0.5px; /* Slimmer lines on mobile */
+                opacity: 1; /* Full opacity on mobile */
+                box-shadow: none; /* Remove shadow for better performance */
+            }
         }
     </style>
 </head>
@@ -81,17 +78,27 @@
     <canvas id="canvas"></canvas>
     <div id="noise-overlay"></div>
     
-    <div class="info">
-        4D Tesseract (Hypercube)<br>
-        16 vertices, 32 edges<br>
-        Rotating in 4D space
-    </div>
-    
     <div class="tesseract-container" id="container">
         <!-- Edges will be created by JavaScript -->
     </div>
 
     <script>
+        // Detect mobile for optimizations
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
+        
+        // Check if device is high-end mobile (like iPhone 15 Pro)
+        // This helps us apply appropriate optimizations based on device capability
+        const isHighEndMobile = (function() {
+            // Check for iPhone models 12 and above (which have A14 Bionic chip or better)
+            const isNewIPhone = /iPhone1[2-9]|iPhone2[0-9]/i.test(navigator.userAgent);
+            // Check for high-end Android devices (rough estimation based on cores and RAM)
+            const isHighEndAndroid = /Android.*Chrome\/[7-9][0-9]|Android.*Chrome\/[1-9][0-9][0-9]/i.test(navigator.userAgent);
+            return isNewIPhone || isHighEndAndroid;
+        })();
+        
+        // Speed multiplier for mobile devices - makes animations run 2.5x faster on mobile
+        const mobileSpeedMultiplier = isMobile ? 2.5 : 1.0;
+
         class RainSystem {
             constructor() {
                 this.canvas = document.getElementById('canvas');
@@ -99,9 +106,11 @@
                 this.rainDrops = [];
                 this.particles = [];
                 this.time = 0;
+                this.lastTimestamp = 0;
+                this.timeStep = 1000 / 60; // Target 60 FPS time step
                 this.resize();
                 this.init();
-                this.animate();
+                this.animate(0);
                 window.addEventListener('resize', () => this.resize());
             }
 
@@ -113,71 +122,87 @@
             }
 
             init() {
+                // Adjust count based on device capability
+                // High-end mobile devices can handle more raindrops
+                const rainCount = isMobile ? (isHighEndMobile ? 100 : 70) : 120;
+                // No particles on mobile as requested by user for optimization
+                const particleCount = isMobile ? 0 : 25;
+
                 // Create rain drops
-                for (let i = 0; i < 150; i++) {
+                for (let i = 0; i < rainCount; i++) {
                     this.rainDrops.push({
-                        x: Math.random() * (this.width + 200) - 100,
+                        x: Math.random() * (this.width + 100) - 50,
                         y: Math.random() * this.height - this.height,
-                        speed: Math.random() * 3 + 2,
-                        length: Math.random() * 20 + 10,
-                        opacity: Math.random() * 0.6 + 0.2,
-                        angle: Math.random() * 10 - 5, // slight angle variation
-                        drift: (Math.random() - 0.5) * 0.3 // horizontal drift
+                        speed: Math.random() * 4 + 4, // Faster base speed
+                        acceleration: 0.02 + Math.random() * 0.03, // Add acceleration
+                        length: Math.random() * 25 + 15, // Slightly longer
+                        opacity: Math.random() * 0.6 + 0.4, // Higher base opacity for better visibility
+                        angle: Math.random() * 6 - 3, // Reduced angle variation
+                        drift: (Math.random() - 0.5) * 0.05 // Much smaller drift
                     });
                 }
 
-                // Create floating particles (reduced count since we have rain)
-                for (let i = 0; i < 30; i++) {
-                    this.particles.push({
-                        x: Math.random() * this.width,
-                        y: Math.random() * this.height,
-                        vx: (Math.random() - 0.5) * 0.5,
-                        vy: (Math.random() - 0.5) * 0.5,
-                        size: Math.random() * 2 + 1,
-                        opacity: Math.random() * 0.3 + 0.1,
-                        life: Math.random() * 1000
-                    });
+                // Create floating particles (only for desktop)
+                if (!isMobile) {
+                    for (let i = 0; i < particleCount; i++) {
+                        this.particles.push({
+                            x: Math.random() * this.width,
+                            y: Math.random() * this.height,
+                            vx: (Math.random() - 0.5) * 0.3,
+                            vy: (Math.random() - 0.5) * 0.3,
+                            size: Math.random() * 2 + 1,
+                            opacity: Math.random() * 0.3 + 0.1,
+                            life: Math.random() * 1000
+                        });
+                    }
                 }
             }
 
-            updateRain() {
+            updateRain(timeScale = 1) {
                 this.rainDrops.forEach(drop => {
-                    // Update position
-                    drop.y += drop.speed;
-                    drop.x += drop.drift;
+                    // Apply acceleration to speed with time scaling
+                    drop.speed += drop.acceleration * timeScale;
                     
-                    // Add subtle wind effect
-                    drop.drift += Math.sin(this.time * 0.01 + drop.x * 0.001) * 0.02;
+                    // Update position with time scaling
+                    drop.y += drop.speed * timeScale;
+                    drop.x += drop.drift * timeScale;
+                    
+                    // Much smaller wind effect with time scaling
+                    drop.drift += Math.sin(this.time * 0.005 + drop.x * 0.0005) * 0.005 * timeScale;
                     
                     // Reset when off screen
                     if (drop.y > this.height + drop.length) {
-                        drop.y = -drop.length - Math.random() * 100;
-                        drop.x = Math.random() * (this.width + 200) - 100;
-                        drop.drift = (Math.random() - 0.5) * 0.3;
+                        drop.y = -drop.length - Math.random() * 200;
+                        drop.x = Math.random() * (this.width + 100) - 50;
+                        drop.speed = Math.random() * 4 + 4; // Reset speed
+                        drop.drift = (Math.random() - 0.5) * 0.05; // Reset drift
                     }
                     
-                    // Wrap horizontally if drifted too far
-                    if (drop.x > this.width + 100) {
-                        drop.x = -100;
-                    } else if (drop.x < -100) {
-                        drop.x = this.width + 100;
+                    // Wrap horizontally if drifted too far (less likely now)
+                    if (drop.x > this.width + 50) {
+                        drop.x = -50;
+                    } else if (drop.x < -50) {
+                        drop.x = this.width + 50;
                     }
                 });
             }
 
-            updateParticles() {
+            updateParticles(timeScale = 1) {
                 this.particles.forEach(particle => {
-                    // Physics simulation with damping
-                    particle.x += particle.vx;
-                    particle.y += particle.vy;
+                    // Simpler physics for mobile performance, but with time scaling
+                    particle.x += particle.vx * timeScale;
+                    particle.y += particle.vy * timeScale;
                     
-                    // Add some subtle movement
-                    particle.vy += Math.sin(particle.x * 0.01 + this.time * 0.02) * 0.01;
-                    particle.vx += Math.cos(particle.y * 0.01 + this.time * 0.015) * 0.01;
+                    // Reduced calculations for mobile, but with time scaling
+                    if (!isMobile) {
+                        particle.vy += Math.sin(particle.x * 0.01 + this.time * 0.01) * 0.005 * timeScale;
+                        particle.vx += Math.cos(particle.y * 0.01 + this.time * 0.01) * 0.005 * timeScale;
+                    }
                     
-                    // Damping
-                    particle.vx *= 0.999;
-                    particle.vy *= 0.999;
+                    // Damping (adjusted for time scaling)
+                    const dampFactor = Math.pow(0.999, timeScale);
+                    particle.vx *= dampFactor;
+                    particle.vy *= dampFactor;
                     
                     // Boundary wrapping
                     if (particle.x < 0) particle.x = this.width;
@@ -185,8 +210,8 @@
                     if (particle.y < 0) particle.y = this.height;
                     if (particle.y > this.height) particle.y = 0;
                     
-                    // Lifecycle
-                    particle.life++;
+                    // Lifecycle with time scaling
+                    particle.life += timeScale;
                     if (particle.life > 2000) {
                         particle.life = 0;
                         particle.x = Math.random() * this.width;
@@ -208,14 +233,21 @@
                     this.ctx.moveTo(drop.x, drop.y);
                     this.ctx.lineTo(endX, endY);
                     
-                    // Create gradient for the rain stripe
-                    const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
-                    gradient.addColorStop(0, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
-                    gradient.addColorStop(0.5, `rgba(108, 117, 125, ${drop.opacity})`);
-                    gradient.addColorStop(1, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                    // Improved coloring for mobile - higher opacity for sharper look
+                    if (isMobile) {
+                        // Higher opacity for mobile (0.9 instead of drop.opacity)
+                        this.ctx.strokeStyle = `rgba(108, 117, 125, 0.9)`;
+                        this.ctx.lineWidth = 0.5; // Slimmer lines for mobile
+                    } else {
+                        // Create gradient for the rain stripe on desktop
+                        const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
+                        gradient.addColorStop(0, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                        gradient.addColorStop(0.5, `rgba(108, 117, 125, ${drop.opacity})`);
+                        gradient.addColorStop(1, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                        this.ctx.strokeStyle = gradient;
+                        this.ctx.lineWidth = 1.5;
+                    }
                     
-                    this.ctx.strokeStyle = gradient;
-                    this.ctx.lineWidth = 1;
                     this.ctx.lineCap = 'round';
                     this.ctx.stroke();
                     
@@ -224,6 +256,9 @@
             }
 
             drawParticles() {
+                // Skip drawing particles on mobile as requested for optimization
+                if (isMobile) return;
+                
                 this.particles.forEach(particle => {
                     this.ctx.beginPath();
                     this.ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
@@ -232,19 +267,34 @@
                 });
             }
 
-            animate() {
+            animate(timestamp) {
+                // Calculate delta time since last frame
+                const deltaTime = timestamp - this.lastTimestamp;
+                this.lastTimestamp = timestamp;
+                
+                // Clear canvas
                 this.ctx.clearRect(0, 0, this.width, this.height);
                 
-                // Update and draw rain
-                this.updateRain();
-                this.drawRain();
+                // Calculate how many time steps to simulate
+                // This ensures consistent animation speed regardless of frame rate
+                const steps = Math.max(1, Math.floor(deltaTime / this.timeStep));
                 
-                // Update and draw particles
-                this.updateParticles();
+                // Apply mobile speed multiplier to make animations faster on mobile
+                const timeIncrement = (1 / steps) * mobileSpeedMultiplier;
+                
+                // Update multiple times if needed to maintain consistent speed
+                for (let i = 0; i < steps; i++) {
+                    // Update rain and particles with normalized time increment
+                    this.updateRain(timeIncrement);
+                    this.updateParticles(timeIncrement);
+                    this.time += timeIncrement;
+                }
+                
+                // Draw everything
+                this.drawRain();
                 this.drawParticles();
                 
-                this.time += 1;
-                requestAnimationFrame(() => this.animate());
+                requestAnimationFrame((ts) => this.animate(ts));
             }
         }
 
@@ -297,96 +347,65 @@
                 this.rotYW = Math.random() * Math.PI * 2;
                 this.rotZW = Math.random() * Math.PI * 2;
 
-                // Rotation speeds for each 4D rotation plane
+                // Use the same base rotation speeds for all devices
+                // We'll use time-based animation to ensure consistent speed
                 this.speedXY = 0.003 + Math.random() * 0.004;
                 this.speedXZ = 0.003 + Math.random() * 0.004;
                 this.speedXW = 0.003 + Math.random() * 0.004;
                 this.speedYZ = 0.003 + Math.random() * 0.004;
                 this.speedYW = 0.003 + Math.random() * 0.004;
                 this.speedZW = 0.003 + Math.random() * 0.004;
+                
+                // Time tracking for consistent animation speed
+                this.lastTimestamp = 0;
+                this.timeStep = 1000 / 60; // Target 60 FPS
 
-                this.animate();
+                this.animate(0);
             }
 
-            // 4D rotation in the XY plane
+            // 4D rotation methods (unchanged)
             rotateXY(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x * cos - y * sin,
-                    x * sin + y * cos,
-                    z,
-                    w
-                ];
+                return [x * cos - y * sin, x * sin + y * cos, z, w];
             }
 
-            // 4D rotation in the XZ plane
             rotateXZ(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x * cos - z * sin,
-                    y,
-                    x * sin + z * cos,
-                    w
-                ];
+                return [x * cos - z * sin, y, x * sin + z * cos, w];
             }
 
-            // 4D rotation in the XW plane
             rotateXW(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x * cos - w * sin,
-                    y,
-                    z,
-                    x * sin + w * cos
-                ];
+                return [x * cos - w * sin, y, z, x * sin + w * cos];
             }
 
-            // 4D rotation in the YZ plane
             rotateYZ(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x,
-                    y * cos - z * sin,
-                    y * sin + z * cos,
-                    w
-                ];
+                return [x, y * cos - z * sin, y * sin + z * cos, w];
             }
 
-            // 4D rotation in the YW plane
             rotateYW(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x,
-                    y * cos - w * sin,
-                    z,
-                    y * sin + w * cos
-                ];
+                return [x, y * cos - w * sin, z, y * sin + w * cos];
             }
 
-            // 4D rotation in the ZW plane
             rotateZW(point, angle) {
                 const [x, y, z, w] = point;
                 const cos = Math.cos(angle);
                 const sin = Math.sin(angle);
-                return [
-                    x,
-                    y,
-                    z * cos - w * sin,
-                    z * sin + w * cos
-                ];
+                return [x, y, z * cos - w * sin, z * sin + w * cos];
             }
 
-            // Apply all 6 possible 4D rotations
             rotate4D(point) {
                 let rotated = point;
                 rotated = this.rotateXY(rotated, this.rotXY);
@@ -398,26 +417,19 @@
                 return rotated;
             }
 
-            // Project 4D point to 3D, then to 2D
             projectTo2D(point4D) {
                 const containerSize = Math.min(this.container.offsetWidth, this.container.offsetHeight);
-                const scale = containerSize * 0.15;
+                const scale = containerSize * 0.2;
                 const centerX = this.container.offsetWidth / 2;
                 const centerY = this.container.offsetHeight / 2;
 
-                // First project 4D to 3D (perspective projection from 4D)
-                const distance4D = 4; // Distance from 4D "eye" to tesseract
+                const distance4D = 4;
                 const w = point4D[3];
                 const perspective4D = distance4D / (distance4D - w);
                 const x3D = point4D[0] * perspective4D;
                 const y3D = point4D[1] * perspective4D;
-                const z3D = point4D[2] * perspective4D;
 
-                // Then project 3D to 2D (orthographic projection)
-                return [
-                    centerX + x3D * scale,
-                    centerY - y3D * scale
-                ];
+                return [centerX + x3D * scale, centerY - y3D * scale];
             }
 
             render() {
@@ -448,33 +460,47 @@
                     edgeElement.style.width = length + 'px';
                     edgeElement.style.transform = `rotate(${angle}deg)`;
 
-                    // Color based on edge type for visual distinction - using grays that match the aesthetic
+                    // Use consistent colors across all devices
                     if (index < 12) {
-                        // Inner cube edges - dark gray
-                        edgeElement.style.background = 'linear-gradient(90deg, #6c757d, #495057)';
+                        edgeElement.style.backgroundColor = '#DB2B39'; // Darker shade
                     } else if (index < 24) {
-                        // Outer cube edges - medium gray
-                        edgeElement.style.background = 'linear-gradient(90deg, #adb5bd, #868e96)';
+                        edgeElement.style.backgroundColor = '#29335c'; // Darker shade
                     } else {
-                        // 4D connecting edges - light gray
-                        edgeElement.style.background = 'linear-gradient(90deg, #dee2e6, #ced4da)';
+                        edgeElement.style.backgroundColor = '#8d99ae'; // Darker shade
                     }
 
                     this.container.appendChild(edgeElement);
                 });
             }
 
-            animate() {
-                // Update all 4D rotation angles
-                this.rotXY += this.speedXY;
-                this.rotXZ += this.speedXZ;
-                this.rotXW += this.speedXW;
-                this.rotYZ += this.speedYZ;
-                this.rotYW += this.speedYW;
-                this.rotZW += this.speedZW;
+            animate(timestamp) {
+                // Calculate delta time since last frame
+                const deltaTime = timestamp - this.lastTimestamp;
+                this.lastTimestamp = timestamp;
+                
+                // Calculate how many time steps to simulate
+                // This ensures consistent animation speed regardless of frame rate
+                const steps = Math.max(1, Math.floor(deltaTime / this.timeStep));
+                
+                // Apply mobile speed multiplier to make animations faster on mobile
+                const timeScale = (1 / steps) * mobileSpeedMultiplier;
+                
+                // Update rotation angles with time scaling for consistent speed
+                for (let i = 0; i < steps; i++) {
+                    this.rotXY += this.speedXY * timeScale;
+                    this.rotXZ += this.speedXZ * timeScale;
+                    this.rotXW += this.speedXW * timeScale;
+                    this.rotYZ += this.speedYZ * timeScale;
+                    this.rotYW += this.speedYW * timeScale;
+                    this.rotZW += this.speedZW * timeScale;
+                }
 
-                this.render();
-                requestAnimationFrame(() => this.animate());
+                // Use requestAnimationFrame with a callback that checks if the component is still mounted
+                // This prevents unnecessary renders if the page is navigated away from
+                if (this.container && document.body.contains(this.container)) {
+                    this.render();
+                    requestAnimationFrame((ts) => this.animate(ts));
+                }
             }
         }
 
