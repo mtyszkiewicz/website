@@ -13,7 +13,7 @@
         body, html {
             height: 100%;
             overflow: hidden;
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 50%, #dee2e6 100%);
+            background: #fefefe;
             font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
         }
         #canvas {
@@ -86,21 +86,78 @@
     </div>
 
     <script>
+        // ===== CONFIGURABLE PARAMETERS =====
+        const RAIN_CONFIG = {
+            // Droplet count
+            DESKTOP_COUNT: 100,
+            MOBILE_COUNT: 60,
+            
+            // Physics
+            INITIAL_SPEED_MIN: 8,        // Minimum initial falling speed
+            INITIAL_SPEED_MAX: 24,       // Maximum initial falling speed
+            ACCELERATION_MIN: 0.15,      // Minimum gravity acceleration
+            ACCELERATION_MAX: 0.25,      // Maximum gravity acceleration
+            MAX_SPEED_MIN: 25,           // Minimum terminal velocity
+            MAX_SPEED_MAX: 35,           // Maximum terminal velocity
+            
+            // Appearance
+            LENGTH_MEAN: 25,             // Average droplet length
+            LENGTH_STD_DEV: 8,           // Length variation
+            LENGTH_MIN: 8,               // Minimum length
+            LENGTH_MAX: 45,              // Maximum length
+            SIZE_MEAN: 0.8,              // Average droplet thickness
+            SIZE_STD_DEV: 0.3,           // Thickness variation
+            SIZE_MIN: 0.4,               // Minimum thickness
+            SIZE_MAX: 1.5,               // Maximum thickness
+            OPACITY_MIN: 0.6,            // Minimum opacity
+            OPACITY_MAX: 1.0,            // Maximum opacity
+            
+            // Movement
+            ANGLE_VARIATION: 4,          // Angle variation in degrees
+            DRIFT_STRENGTH: 0.03,        // Wind drift strength
+            WOBBLE_STRENGTH: 0.3,        // Wobble effect strength
+            WOBBLE_SPEED_MIN: 0.02,      // Minimum wobble speed
+            WOBBLE_SPEED_MAX: 0.05,      // Maximum wobble speed
+            
+            // Colors (RGB values)
+            COLOR_R: 0,                  // Red component (0-255)
+            COLOR_G: 0,                  // Green component (0-255)
+            COLOR_B: 0,                  // Blue component (0-255)
+            
+            // Depth and visual effects
+            DEPTH_FACTOR_MIN: 0.5,       // Minimum depth factor for size scaling
+            DEPTH_FACTOR_MAX: 1.3,       // Maximum depth factor for size scaling
+            OPACITY_DEPTH_MIN: 0.6,      // Minimum opacity multiplier for depth
+            OPACITY_DEPTH_MAX: 1.0,      // Maximum opacity multiplier for depth
+            
+            // Highlight effects
+            HIGHLIGHT_COLOR_R: 128,      // Highlight red component
+            HIGHLIGHT_COLOR_G: 128,      // Highlight green component
+            HIGHLIGHT_COLOR_B: 128,      // Highlight blue component
+            HIGHLIGHT_OPACITY: 0.3,      // Highlight opacity multiplier
+            HIGHLIGHT_WIDTH: 0.2,        // Highlight width as fraction of droplet size
+            HIGHLIGHT_START: 0.3,        // Highlight start position (0-1 along droplet)
+            HIGHLIGHT_END: 0.7,          // Highlight end position (0-1 along droplet)
+            
+            // Mobile optimizations
+            MOBILE_LINE_WIDTH: 0.6,      // Mobile line width multiplier
+            
+            // Wind and environmental effects
+            WIND_FREQUENCY: 0.003,       // Wind oscillation frequency
+            WIND_SPATIAL_FREQ: 0.0003,   // Spatial wind variation frequency
+            WIND_STRENGTH: 0.003,        // Wind effect strength
+            
+            // Reset positioning
+            RESET_HEIGHT_VARIATION: 300, // Random height variation when resetting droplets
+            SPAWN_MARGIN: 50,            // Horizontal margin for droplet spawning
+        };
+        
         // Detect mobile for optimizations
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
         
-        // Check if device is high-end mobile (like iPhone 15 Pro)
-        // This helps us apply appropriate optimizations based on device capability
-        const isHighEndMobile = (function() {
-            // Check for iPhone models 12 and above (which have A14 Bionic chip or better)
-            const isNewIPhone = /iPhone1[2-9]|iPhone2[0-9]/i.test(navigator.userAgent);
-            // Check for high-end Android devices (rough estimation based on cores and RAM)
-            const isHighEndAndroid = /Android.*Chrome\/[7-9][0-9]|Android.*Chrome\/[1-9][0-9][0-9]/i.test(navigator.userAgent);
-            return isNewIPhone || isHighEndAndroid;
-        })();
         
-        // Speed multiplier for mobile devices - makes animations run 2.5x faster on mobile
-        const mobileSpeedMultiplier = isMobile ? 2.5 : 1.0;
+        // Speed multiplier for mobile devices
+        const mobileSpeedMultiplier = isMobile ? 1.4 : 1.0;
 
         // Helper function to generate random numbers with normal distribution (bell curve)
         function randomNormal(mean, stdDev) {
@@ -116,7 +173,6 @@
                 this.canvas = document.getElementById('canvas');
                 this.ctx = this.canvas.getContext('2d');
                 this.rainDrops = [];
-                this.particles = [];
                 this.time = 0;
                 this.lastTimestamp = 0;
                 this.timeStep = 1000 / 60; // Target 60 FPS time step
@@ -134,81 +190,128 @@
             }
 
             init() {
-                // Adjust count based on device capability
-                // High-end mobile devices can handle more raindrops
-                const rainCount = isMobile ? (isHighEndMobile ? 100 : 70) : 120;
-                // No particles on mobile as requested by user for optimization
-                const particleCount = isMobile ? 0 : 25;
+                // Adjust count based on device capability using config
+                const rainCount = isMobile ? RAIN_CONFIG.MOBILE_COUNT : RAIN_CONFIG.DESKTOP_COUNT;
 
-                // Create rain drops with bell curve distribution for lengths
+                // Create rain drops with configurable parameters
                 for (let i = 0; i < rainCount; i++) {
-                    // Use normal distribution for length (mean = 30, stdDev = 10)
-                    // This creates a bell curve distribution centered at 30 with most values between 10-50
-                    let length = randomNormal(30, 10);
-                    // Clamp length to reasonable values (min 10, max 60)
-                    length = Math.max(10, Math.min(60, length));
+                    // Use normal distribution for length with config values
+                    let length = randomNormal(RAIN_CONFIG.LENGTH_MEAN, RAIN_CONFIG.LENGTH_STD_DEV);
+                    length = Math.max(RAIN_CONFIG.LENGTH_MIN, Math.min(RAIN_CONFIG.LENGTH_MAX, length));
                     
+                    // Create droplet sizes with config values
+                    let size = randomNormal(RAIN_CONFIG.SIZE_MEAN, RAIN_CONFIG.SIZE_STD_DEV);
+                    size = Math.max(RAIN_CONFIG.SIZE_MIN, Math.min(RAIN_CONFIG.SIZE_MAX, size));
+                    
+                    // Generate size first to determine speed based on width
+                    // Wider droplets should go faster
+                    const sizeFactor = (size - RAIN_CONFIG.SIZE_MIN) / (RAIN_CONFIG.SIZE_MAX - RAIN_CONFIG.SIZE_MIN);
+                    
+                    // Calculate speed based on size (wider = faster)
+                    const speedRange = RAIN_CONFIG.MAX_SPEED_MAX - RAIN_CONFIG.MAX_SPEED_MIN;
+                    const maxSpeed = RAIN_CONFIG.MAX_SPEED_MIN + (sizeFactor * speedRange);
+                    const initialSpeed = Math.random() * (RAIN_CONFIG.INITIAL_SPEED_MAX - RAIN_CONFIG.INITIAL_SPEED_MIN) + RAIN_CONFIG.INITIAL_SPEED_MIN;
+                    
+                    // Use size as the primary factor for depth perception
+                    const depthFactorRange = RAIN_CONFIG.DEPTH_FACTOR_MAX - RAIN_CONFIG.DEPTH_FACTOR_MIN;
+                    const depthFactor = RAIN_CONFIG.DEPTH_FACTOR_MIN + (sizeFactor * depthFactorRange);
+                    
+                    // Adjust length based on size (wider droplets are also longer)
+                    const depthAdjustedSize = size;
+                    const depthAdjustedLength = length * depthFactor;
+                    
+                    // Adjust opacity based on size (wider droplets are more opaque)
+                    const baseOpacity = Math.random() * (RAIN_CONFIG.OPACITY_MAX - RAIN_CONFIG.OPACITY_MIN) + RAIN_CONFIG.OPACITY_MIN;
+                    const opacityDepthRange = RAIN_CONFIG.OPACITY_DEPTH_MAX - RAIN_CONFIG.OPACITY_DEPTH_MIN;
+                    const depthAdjustedOpacity = baseOpacity * (RAIN_CONFIG.OPACITY_DEPTH_MIN + sizeFactor * opacityDepthRange);
+
+                    // Calculate acceleration inversely related to max speed (slower droplets accelerate faster)
+                    const accelerationRange = RAIN_CONFIG.ACCELERATION_MAX - RAIN_CONFIG.ACCELERATION_MIN;
+                    const acceleration = RAIN_CONFIG.ACCELERATION_MAX - (sizeFactor * accelerationRange);
+
                     this.rainDrops.push({
                         x: Math.random() * (this.width + 100) - 50,
                         y: Math.random() * this.height - this.height,
-                        speed: Math.random() * 3 + 3, // Initial speed
-                        acceleration: 0.05 + Math.random() * 0.05, // Increased acceleration for more noticeable effect
-                        maxSpeed: 12 + Math.random() * 5, // Maximum speed cap
-                        length: length, // Bell curve distributed lengths
-                        opacity: Math.random() * 0.6 + 0.4, // Higher base opacity for better visibility
-                        angle: Math.random() * 6 - 3, // Reduced angle variation
-                        drift: (Math.random() - 0.5) * 0.05 // Much smaller drift
+                        speed: initialSpeed,
+                        acceleration: acceleration,
+                        maxSpeed: maxSpeed,
+                        length: depthAdjustedLength,
+                        size: depthAdjustedSize,
+                        opacity: depthAdjustedOpacity,
+                        angle: Math.random() * RAIN_CONFIG.ANGLE_VARIATION - (RAIN_CONFIG.ANGLE_VARIATION / 2),
+                        drift: (Math.random() - 0.5) * RAIN_CONFIG.DRIFT_STRENGTH,
+                        wobble: Math.random() * 0.5,
+                        wobbleSpeed: RAIN_CONFIG.WOBBLE_SPEED_MIN + Math.random() * (RAIN_CONFIG.WOBBLE_SPEED_MAX - RAIN_CONFIG.WOBBLE_SPEED_MIN),
+                        depthFactor: depthFactor // Store for later use when resetting droplets
                     });
                 }
 
-                // Create floating particles (only for desktop)
-                if (!isMobile) {
-                    for (let i = 0; i < particleCount; i++) {
-                        this.particles.push({
-                            x: Math.random() * this.width,
-                            y: Math.random() * this.height,
-                            vx: (Math.random() - 0.5) * 0.3,
-                            vy: (Math.random() - 0.5) * 0.3,
-                            size: Math.random() * 2 + 1,
-                            opacity: Math.random() * 0.3 + 0.1,
-                            life: Math.random() * 1000
-                        });
-                    }
-                }
+                // Floating particles removed
             }
 
             updateRain(timeScale = 1) {
                 this.rainDrops.forEach(drop => {
-                    // Apply acceleration to speed with time scaling
+                    // Apply gravity acceleration
                     drop.speed += drop.acceleration * timeScale;
                     
-                    // Cap the speed at the maximum value
+                    // Cap the speed at terminal velocity
                     if (drop.speed > drop.maxSpeed) {
                         drop.speed = drop.maxSpeed;
                     }
                     
-                    // Update position with time scaling
+                    // Update wobble for natural movement
+                    drop.wobble += drop.wobbleSpeed * timeScale;
+                    
+                    // Update position with realistic physics
                     drop.y += drop.speed * timeScale;
                     drop.x += drop.drift * timeScale;
                     
-                    // Much smaller wind effect with time scaling
-                    drop.drift += Math.sin(this.time * 0.005 + drop.x * 0.0005) * 0.005 * timeScale;
+                    // Add subtle wobble effect
+                    drop.x += Math.sin(drop.wobble) * RAIN_CONFIG.WOBBLE_STRENGTH * timeScale;
+                    
+                    // Gentle wind effect using config values
+                    drop.drift += Math.sin(this.time * RAIN_CONFIG.WIND_FREQUENCY + drop.x * RAIN_CONFIG.WIND_SPATIAL_FREQ) * RAIN_CONFIG.WIND_STRENGTH * timeScale;
                     
                     // Reset when off screen
                     if (drop.y > this.height + drop.length) {
-                        drop.y = -drop.length - Math.random() * 200;
-                        drop.x = Math.random() * (this.width + 100) - 50;
+                        drop.y = -drop.length - Math.random() * RAIN_CONFIG.RESET_HEIGHT_VARIATION;
+                        drop.x = Math.random() * (this.width + RAIN_CONFIG.SPAWN_MARGIN * 2) - RAIN_CONFIG.SPAWN_MARGIN;
                         
-                        // Reset speed to initial lower value
-                        drop.speed = Math.random() * 3 + 3;
-                        drop.drift = (Math.random() - 0.5) * 0.05; // Reset drift
+                        // Generate new base properties using config
+                        let baseLength = randomNormal(RAIN_CONFIG.LENGTH_MEAN, RAIN_CONFIG.LENGTH_STD_DEV);
+                        baseLength = Math.max(RAIN_CONFIG.LENGTH_MIN, Math.min(RAIN_CONFIG.LENGTH_MAX, baseLength));
+                        let baseSize = randomNormal(RAIN_CONFIG.SIZE_MEAN, RAIN_CONFIG.SIZE_STD_DEV);
+                        baseSize = Math.max(RAIN_CONFIG.SIZE_MIN, Math.min(RAIN_CONFIG.SIZE_MAX, baseSize));
                         
-                        // Generate new length with bell curve distribution
-                        let length = randomNormal(30, 10);
-                        drop.length = Math.max(10, Math.min(60, length));
+                        // Calculate size factor for speed determination (wider = faster)
+                        const sizeFactor = (baseSize - RAIN_CONFIG.SIZE_MIN) / (RAIN_CONFIG.SIZE_MAX - RAIN_CONFIG.SIZE_MIN);
+                        
+                        // Calculate speed based on size (wider = faster)
+                        const speedRange = RAIN_CONFIG.MAX_SPEED_MAX - RAIN_CONFIG.MAX_SPEED_MIN;
+                        drop.maxSpeed = RAIN_CONFIG.MAX_SPEED_MIN + (sizeFactor * speedRange);
+                        drop.speed = Math.random() * (RAIN_CONFIG.INITIAL_SPEED_MAX - RAIN_CONFIG.INITIAL_SPEED_MIN) + RAIN_CONFIG.INITIAL_SPEED_MIN;
+                        drop.drift = (Math.random() - 0.5) * RAIN_CONFIG.DRIFT_STRENGTH;
+                        drop.wobble = Math.random() * 0.5;
+                        
+                        // Use size as the primary factor for depth perception
+                        const depthFactorRange = RAIN_CONFIG.DEPTH_FACTOR_MAX - RAIN_CONFIG.DEPTH_FACTOR_MIN;
+                        drop.depthFactor = RAIN_CONFIG.DEPTH_FACTOR_MIN + (sizeFactor * depthFactorRange);
+                        
+                        // Calculate acceleration inversely related to max speed (slower droplets accelerate faster)
+                        const accelerationRange = RAIN_CONFIG.ACCELERATION_MAX - RAIN_CONFIG.ACCELERATION_MIN;
+                        drop.acceleration = RAIN_CONFIG.ACCELERATION_MAX - (sizeFactor * accelerationRange);
+                        
+                        // Apply size-based adjustments
+                        drop.length = baseLength * drop.depthFactor;
+                        drop.size = baseSize;
+                        
+                        // Adjust opacity based on size (wider droplets are more opaque)
+                        const baseOpacity = Math.random() * (RAIN_CONFIG.OPACITY_MAX - RAIN_CONFIG.OPACITY_MIN) + RAIN_CONFIG.OPACITY_MIN;
+                        const opacityDepthRange = RAIN_CONFIG.OPACITY_DEPTH_MAX - RAIN_CONFIG.OPACITY_DEPTH_MIN;
+                        drop.opacity = baseOpacity * (RAIN_CONFIG.OPACITY_DEPTH_MIN + sizeFactor * opacityDepthRange);
                     }
                     
-                    // Wrap horizontally if drifted too far (less likely now)
+                    // Wrap horizontally if drifted too far
                     if (drop.x > this.width + 50) {
                         drop.x = -50;
                     } else if (drop.x < -50) {
@@ -217,38 +320,6 @@
                 });
             }
 
-            updateParticles(timeScale = 1) {
-                this.particles.forEach(particle => {
-                    // Simpler physics for mobile performance, but with time scaling
-                    particle.x += particle.vx * timeScale;
-                    particle.y += particle.vy * timeScale;
-                    
-                    // Reduced calculations for mobile, but with time scaling
-                    if (!isMobile) {
-                        particle.vy += Math.sin(particle.x * 0.01 + this.time * 0.01) * 0.005 * timeScale;
-                        particle.vx += Math.cos(particle.y * 0.01 + this.time * 0.01) * 0.005 * timeScale;
-                    }
-                    
-                    // Damping (adjusted for time scaling)
-                    const dampFactor = Math.pow(0.999, timeScale);
-                    particle.vx *= dampFactor;
-                    particle.vy *= dampFactor;
-                    
-                    // Boundary wrapping
-                    if (particle.x < 0) particle.x = this.width;
-                    if (particle.x > this.width) particle.x = 0;
-                    if (particle.y < 0) particle.y = this.height;
-                    if (particle.y > this.height) particle.y = 0;
-                    
-                    // Lifecycle with time scaling
-                    particle.life += timeScale;
-                    if (particle.life > 2000) {
-                        particle.life = 0;
-                        particle.x = Math.random() * this.width;
-                        particle.y = Math.random() * this.height;
-                    }
-                });
-            }
 
             drawRain() {
                 this.rainDrops.forEach(drop => {
@@ -258,44 +329,57 @@
                     const endX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length;
                     const endY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length;
                     
-                    // Draw rain stripe as a line
+                    // Draw main droplet body
                     this.ctx.beginPath();
                     this.ctx.moveTo(drop.x, drop.y);
                     this.ctx.lineTo(endX, endY);
                     
-                    // Improved coloring for mobile - higher opacity for sharper look
                     if (isMobile) {
-                        // Higher opacity for mobile (0.9 instead of drop.opacity)
-                        this.ctx.strokeStyle = `rgba(108, 117, 125, 0.9)`;
-                        this.ctx.lineWidth = 0.3; // Thinner lines for mobile
+                        // Use config colors for mobile
+                        this.ctx.strokeStyle = `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity})`;
+                        this.ctx.lineWidth = drop.size * RAIN_CONFIG.MOBILE_LINE_WIDTH;
                     } else {
-                        // Create gradient for the rain stripe on desktop
+                        // Create gradient using config colors
                         const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
-                        gradient.addColorStop(0, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
-                        gradient.addColorStop(0.5, `rgba(108, 117, 125, ${drop.opacity})`);
-                        gradient.addColorStop(1, `rgba(108, 117, 125, ${drop.opacity * 0.1})`);
+                        gradient.addColorStop(0, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity * 0.3})`);
+                        gradient.addColorStop(0.5, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity})`);
+                        gradient.addColorStop(1, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity * 0.3})`);
                         this.ctx.strokeStyle = gradient;
-                        this.ctx.lineWidth = 1.5;
+                        this.ctx.lineWidth = drop.size;
+                        
+                        // Add subtle shadow effect
+                        this.ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
+                        this.ctx.shadowBlur = 1;
+                        this.ctx.shadowOffsetX = 0.5;
+                        this.ctx.shadowOffsetY = 0.5;
                     }
                     
                     this.ctx.lineCap = 'round';
+                    this.ctx.stroke();
+                    
+                    // Draw droplet highlight on all platforms
+                    this.ctx.shadowColor = 'transparent';
+                    this.ctx.shadowBlur = 0;
+                    this.ctx.shadowOffsetX = 0;
+                    this.ctx.shadowOffsetY = 0;
+                    
+                    // Add highlight streak using config values
+                    const highlightX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_START;
+                    const highlightY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_START;
+                    const highlightEndX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_END;
+                    const highlightEndY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_END;
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(highlightX, highlightY);
+                    this.ctx.lineTo(highlightEndX, highlightEndY);
+                    this.ctx.strokeStyle = `rgba(${RAIN_CONFIG.HIGHLIGHT_COLOR_R}, ${RAIN_CONFIG.HIGHLIGHT_COLOR_G}, ${RAIN_CONFIG.HIGHLIGHT_COLOR_B}, ${drop.opacity * RAIN_CONFIG.HIGHLIGHT_OPACITY})`;
+                    this.ctx.lineWidth = drop.size * RAIN_CONFIG.HIGHLIGHT_WIDTH;
                     this.ctx.stroke();
                     
                     this.ctx.restore();
                 });
             }
 
-            drawParticles() {
-                // Skip drawing particles on mobile as requested for optimization
-                if (isMobile) return;
-                
-                this.particles.forEach(particle => {
-                    this.ctx.beginPath();
-                    this.ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
-                    this.ctx.fillStyle = `rgba(108, 117, 125, ${particle.opacity})`;
-                    this.ctx.fill();
-                });
-            }
 
             animate(timestamp) {
                 // Calculate delta time since last frame
@@ -314,15 +398,13 @@
                 
                 // Update multiple times if needed to maintain consistent speed
                 for (let i = 0; i < steps; i++) {
-                    // Update rain and particles with normalized time increment
+                    // Update rain with normalized time increment
                     this.updateRain(timeIncrement);
-                    this.updateParticles(timeIncrement);
                     this.time += timeIncrement;
                 }
                 
-                // Draw everything
+                // Draw rain
                 this.drawRain();
-                this.drawParticles();
                 
                 requestAnimationFrame((ts) => this.animate(ts));
             }
