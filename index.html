@@ -99,6 +99,15 @@
         // Speed multiplier for mobile devices - makes animations run 2.5x faster on mobile
         const mobileSpeedMultiplier = isMobile ? 2.5 : 1.0;
 
+        // Helper function to generate random numbers with normal distribution (bell curve)
+        function randomNormal(mean, stdDev) {
+            // Box-Muller transform
+            const u1 = Math.random();
+            const u2 = Math.random();
+            const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+            return z0 * stdDev + mean;
+        }
+
         class RainSystem {
             constructor() {
                 this.canvas = document.getElementById('canvas');
@@ -128,14 +137,21 @@
                 // No particles on mobile as requested by user for optimization
                 const particleCount = isMobile ? 0 : 25;
 
-                // Create rain drops
+                // Create rain drops with bell curve distribution for lengths
                 for (let i = 0; i < rainCount; i++) {
+                    // Use normal distribution for length (mean = 30, stdDev = 10)
+                    // This creates a bell curve distribution centered at 30 with most values between 10-50
+                    let length = randomNormal(30, 10);
+                    // Clamp length to reasonable values (min 10, max 60)
+                    length = Math.max(10, Math.min(60, length));
+                    
                     this.rainDrops.push({
                         x: Math.random() * (this.width + 100) - 50,
                         y: Math.random() * this.height - this.height,
-                        speed: Math.random() * 4 + 4, // Faster base speed
-                        acceleration: 0.02 + Math.random() * 0.03, // Add acceleration
-                        length: Math.random() * 25 + 15, // Slightly longer
+                        speed: Math.random() * 3 + 3, // Initial speed
+                        acceleration: 0.05 + Math.random() * 0.05, // Increased acceleration for more noticeable effect
+                        maxSpeed: 12 + Math.random() * 5, // Maximum speed cap
+                        length: length, // Bell curve distributed lengths
                         opacity: Math.random() * 0.6 + 0.4, // Higher base opacity for better visibility
                         angle: Math.random() * 6 - 3, // Reduced angle variation
                         drift: (Math.random() - 0.5) * 0.05 // Much smaller drift
@@ -163,6 +179,11 @@
                     // Apply acceleration to speed with time scaling
                     drop.speed += drop.acceleration * timeScale;
                     
+                    // Cap the speed at the maximum value
+                    if (drop.speed > drop.maxSpeed) {
+                        drop.speed = drop.maxSpeed;
+                    }
+                    
                     // Update position with time scaling
                     drop.y += drop.speed * timeScale;
                     drop.x += drop.drift * timeScale;
@@ -174,8 +195,14 @@
                     if (drop.y > this.height + drop.length) {
                         drop.y = -drop.length - Math.random() * 200;
                         drop.x = Math.random() * (this.width + 100) - 50;
-                        drop.speed = Math.random() * 4 + 4; // Reset speed
+                        
+                        // Reset speed to initial lower value
+                        drop.speed = Math.random() * 3 + 3;
                         drop.drift = (Math.random() - 0.5) * 0.05; // Reset drift
+                        
+                        // Generate new length with bell curve distribution
+                        let length = randomNormal(30, 10);
+                        drop.length = Math.max(10, Math.min(60, length));
                     }
                     
                     // Wrap horizontally if drifted too far (less likely now)
