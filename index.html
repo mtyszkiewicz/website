@@ -53,8 +53,8 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: min(90vw, 90vh);
-            height: min(90vw, 90vh);
+            width: min(70vw, 70vh);
+            height: min(70vw, 70vh);
             z-index: 10;
         }
         .edge {
@@ -70,6 +70,9 @@
                 height: 0.5px; /* Slimmer lines on mobile */
                 opacity: 1; /* Full opacity on mobile */
                 box-shadow: none; /* Remove shadow for better performance */
+            }
+            .tesseract-container {
+                display: none; /* Hide hypercube on mobile */
             }
         }
     </style>
@@ -264,7 +267,7 @@
                     if (isMobile) {
                         // Higher opacity for mobile (0.9 instead of drop.opacity)
                         this.ctx.strokeStyle = `rgba(108, 117, 125, 0.9)`;
-                        this.ctx.lineWidth = 0.5; // Slimmer lines for mobile
+                        this.ctx.lineWidth = 0.3; // Thinner lines for mobile
                     } else {
                         // Create gradient for the rain stripe on desktop
                         const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
