@@ -451,22 +451,29 @@
                     [4, 12], [5, 13], [6, 14], [7, 15]
                 ];
 
-                // 4D rotation angles
-                this.rotXY = Math.random() * Math.PI * 2;
-                this.rotXZ = Math.random() * Math.PI * 2;
-                this.rotXW = Math.random() * Math.PI * 2;
-                this.rotYZ = Math.random() * Math.PI * 2;
-                this.rotYW = Math.random() * Math.PI * 2;
-                this.rotZW = Math.random() * Math.PI * 2;
+                // Configuration: Select which rotation planes to use
+                // 0=XY, 1=XZ, 2=XW, 3=YZ, 4=YW, 5=ZW
+                // Change this array to select different rotation planes:
+                // this.activePlanes = [0, 3, 4];
+                this.activePlanes = [0, 3, 4, 5];
+                // this.activePlanes = [1, 2, 3, 4, 5];
 
-                // Use the same base rotation speeds for all devices
-                // We'll use time-based animation to ensure consistent speed
-                this.speedXY = 0.003 + Math.random() * 0.004;
-                this.speedXZ = 0.003 + Math.random() * 0.004;
-                this.speedXW = 0.003 + Math.random() * 0.004;
-                this.speedYZ = 0.003 + Math.random() * 0.004;
-                this.speedYW = 0.003 + Math.random() * 0.004;
-                this.speedZW = 0.003 + Math.random() * 0.004;
+                
+                // You can try different combinations:
+                // [0, 5] = XY + ZW (classic double rotation)
+                // [2, 4] = XW + YW (pure 4D rotation)
+                // [0, 1, 2] = XY + XZ + XW (X-axis focused)
+                // [0, 2, 4] = XY + XW + YW (balanced 4D)
+                // [1, 3, 5] = XZ + YZ + ZW (no XY rotation)
+
+                // Initialize rotation angles and speeds for active planes
+                this.rotationAngles = [];
+                this.rotationSpeeds = [];
+                
+                for (let i = 0; i < this.activePlanes.length; i++) {
+                    this.rotationAngles.push(Math.random() * Math.PI * 2);
+                    this.rotationSpeeds.push(0.006 + Math.random() * 0.006);
+                }
                 
                 // Time tracking for consistent animation speed
                 this.lastTimestamp = 0;
@@ -518,14 +525,37 @@
                 return [x, y, z * cos - w * sin, z * sin + w * cos];
             }
 
+            // Configurable 4D rotation: rotate about selected planes
             rotate4D(point) {
                 let rotated = point;
-                rotated = this.rotateXY(rotated, this.rotXY);
-                rotated = this.rotateXZ(rotated, this.rotXZ);
-                rotated = this.rotateXW(rotated, this.rotXW);
-                rotated = this.rotateYZ(rotated, this.rotYZ);
-                rotated = this.rotateYW(rotated, this.rotYW);
-                rotated = this.rotateZW(rotated, this.rotZW);
+                
+                // Apply rotations for each active plane
+                for (let i = 0; i < this.activePlanes.length; i++) {
+                    const planeIndex = this.activePlanes[i];
+                    const angle = this.rotationAngles[i];
+                    
+                    switch (planeIndex) {
+                        case 0: // XY plane
+                            rotated = this.rotateXY(rotated, angle);
+                            break;
+                        case 1: // XZ plane
+                            rotated = this.rotateXZ(rotated, angle);
+                            break;
+                        case 2: // XW plane
+                            rotated = this.rotateXW(rotated, angle);
+                            break;
+                        case 3: // YZ plane
+                            rotated = this.rotateYZ(rotated, angle);
+                            break;
+                        case 4: // YW plane
+                            rotated = this.rotateYW(rotated, angle);
+                            break;
+                        case 5: // ZW plane
+                            rotated = this.rotateZW(rotated, angle);
+                            break;
+                    }
+                }
+                
                 return rotated;
             }
 
@@ -599,12 +629,9 @@
                 
                 // Update rotation angles with time scaling for consistent speed
                 for (let i = 0; i < steps; i++) {
-                    this.rotXY += this.speedXY * timeScale;
-                    this.rotXZ += this.speedXZ * timeScale;
-                    this.rotXW += this.speedXW * timeScale;
-                    this.rotYZ += this.speedYZ * timeScale;
-                    this.rotYW += this.speedYW * timeScale;
-                    this.rotZW += this.speedZW * timeScale;
+                    for (let j = 0; j < this.rotationAngles.length; j++) {
+                        this.rotationAngles[j] += this.rotationSpeeds[j] * timeScale;
+                    }
                 }
 
                 // Use requestAnimationFrame with a callback that checks if the component is still mounted
