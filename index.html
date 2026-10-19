@@ -56,21 +56,37 @@
             width: min(70vw, 70vh);
             height: min(70vw, 70vh);
             z-index: 10;
+            /* Gives the pointer tilt real depth instead of a flat skew. */
+            perspective: 1400px;
+            cursor: grab;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
         }
+        .tesseract-container.is-dragging {
+            cursor: grabbing;
+        }
+        /* Everything is positioned inside this plane, which the pointer tilts. */
+        .tesseract-face {
+            position: absolute;
+            inset: 0;
+            transform-style: preserve-3d;
+            will-change: transform;
+        }
+        /* Edges are 100px objects scaled along their own axis, so a frame only
+           ever writes transforms: no layout, no reflow, no rebuild. */
         .edge {
             position: absolute;
-            height: 1px; /* Thinner lines for sharper appearance */
+            top: 0;
+            left: 0;
+            width: 100px;
+            height: 1px;
             transform-origin: 0 50%;
-            opacity: 1; /* Full opacity for sharper appearance */
-            /* box-shadow: 0 0 3px rgba(0, 0, 0, 0.15); */
+            will-change: transform, opacity;
+            pointer-events: none;
         }
         /* Apply device-specific styles */
         @media (max-width: 767px) {
-            .edge {
-                height: 0.5px; /* Slimmer lines on mobile */
-                opacity: 1; /* Full opacity on mobile */
-                box-shadow: none; /* Remove shadow for better performance */
-            }
             .tesseract-container {
                 display: none; /* Hide hypercube on mobile */
             }
@@ -81,8 +97,8 @@
     <canvas id="canvas"></canvas>
     <div id="noise-overlay"></div>
     
-    <div class="tesseract-container" id="container">
-        <!-- Edges will be created by JavaScript -->
+    <div class="tesseract-container" id="container" aria-hidden="true">
+        <!-- The 4D plane is built by JavaScript -->
     </div>
 
     <script>
@@ -570,7 +586,10 @@
         class Tesseract4D {
             constructor(containerId) {
                 this.container = document.getElementById(containerId);
-                
+                this.face = document.createElement('div');
+                this.face.className = 'tesseract-face';
+                this.container.appendChild(this.face);
+
                 // Define the 16 vertices of a tesseract in 4D space
                 this.originalVertices = [
                     // Inner cube (w = -1)
@@ -615,7 +634,6 @@
                 this.activePlanes = [0, 3, 4, 5];
                 // this.activePlanes = [1, 2, 3, 4, 5];
 
-                
                 // You can try different combinations:
                 // [0, 5] = XY + ZW (classic double rotation)
                 // [2, 4] = XW + YW (pure 4D rotation)
@@ -626,17 +644,86 @@
                 // Initialize rotation angles and speeds for active planes
                 this.rotationAngles = [];
                 this.rotationSpeeds = [];
-                
+
                 for (let i = 0; i < this.activePlanes.length; i++) {
                     this.rotationAngles.push(Math.random() * Math.PI * 2);
                     this.rotationSpeeds.push(0.006 + Math.random() * 0.006);
                 }
-                
+
+                // Pointer state: parallax tilt, plus spin momentum from dragging
+                this.tiltX = 0;
+                this.tiltY = 0;
+                this.targetTiltX = 0;
+                this.targetTiltY = 0;
+                this.spin = 0;
+                this.dragging = false;
+                this.lastPointerX = 0;
+                this.pointerX = 0;
+                this.pointerY = 0;
+                this.hasPointer = false;
+
                 // Time tracking for consistent animation speed
                 this.lastTimestamp = 0;
                 this.timeStep = 1000 / 60; // Target 60 FPS
+                this.time = 0;
 
-                this.animate(0);
+                this.build();
+                this.bindPointer();
+
+                if (prefersReducedMotion) {
+                    // A still frame of the hypercube, still legible in depth.
+                    this.render();
+                } else {
+                    this.animate(0);
+                }
+            }
+
+            /* Create the 32 edges and 16 nodes once, then only ever mutate their
+               transforms. The previous version rebuilt the DOM every frame. */
+            build() {
+                this.edgeElements = this.edges.map((edge, index) => {
+                    const element = document.createElement('div');
+                    element.className = 'edge';
+                    // Inner cube red, outer cube navy, 4D connectors grey.
+                    element.style.backgroundColor = index < 12 ? '#DB2B39'
+                        : index < 24 ? '#29335c'
+                        : '#8d99ae';
+                    this.face.appendChild(element);
+                    return element;
+                });
+            }
+
+            bindPointer() {
+                window.addEventListener('pointermove', (event) => {
+                    this.pointerX = event.clientX;
+                    this.pointerY = event.clientY;
+                    this.hasPointer = true;
+
+                    if (this.dragging) {
+                        const dx = event.clientX - this.lastPointerX;
+                        this.lastPointerX = event.clientX;
+                        // Drag sideways and the whole 4D rotation picks up speed.
+                        this.spin = clamp(this.spin + dx * 0.0009, -0.06, 0.06);
+                    }
+                }, { passive: true });
+
+                this.container.addEventListener('pointerdown', (event) => {
+                    this.dragging = true;
+                    this.lastPointerX = event.clientX;
+                    this.container.classList.add('is-dragging');
+                });
+
+                const release = () => {
+                    this.dragging = false;
+                    this.container.classList.remove('is-dragging');
+                };
+                window.addEventListener('pointerup', release, { passive: true });
+                window.addEventListener('pointercancel', release, { passive: true });
+
+                // Let the cube settle back to rest when the pointer leaves.
+                document.addEventListener('pointerleave', () => {
+                    this.hasPointer = false;
+                }, { passive: true });
             }
 
             // 4D rotation methods (unchanged)
@@ -716,11 +803,12 @@
                 return rotated;
             }
 
+            // Project to the face.
             projectTo2D(point4D) {
-                const containerSize = Math.min(this.container.offsetWidth, this.container.offsetHeight);
+                const containerSize = Math.min(this.face.offsetWidth, this.face.offsetHeight);
                 const scale = containerSize * 0.2;
-                const centerX = this.container.offsetWidth / 2;
-                const centerY = this.container.offsetHeight / 2;
+                const centerX = this.face.offsetWidth / 2;
+                const centerY = this.face.offsetHeight / 2;
 
                 const distance4D = 4;
                 const w = point4D[3];
@@ -732,70 +820,89 @@
             }
 
             render() {
-                // Clear container
-                this.container.innerHTML = '';
+                if (!this.face.offsetWidth) return;
 
-                // Apply 4D rotation to all vertices
+                // Apply 4D rotation to all vertices, then project them
                 const rotated4D = this.originalVertices.map(vertex => this.rotate4D(vertex));
-
-                // Project to 2D
                 const projected2D = rotated4D.map(vertex => this.projectTo2D(vertex));
 
-                // Create edges
-                this.edges.forEach((edge, index) => {
-                    const [startIdx, endIdx] = edge;
-                    const start = projected2D[startIdx];
-                    const end = projected2D[endIdx];
-                    
+                // Tilt the whole plane toward the pointer. A slow breath keeps it
+                // alive when nobody is interacting.
+                const breathe = 1 + Math.sin(this.time * 0.0006) * 0.012;
+                this.face.style.transform =
+                    `rotateX(${this.tiltX.toFixed(3)}deg) rotateY(${this.tiltY.toFixed(3)}deg) scale(${breathe.toFixed(4)})`;
+
+                for (let i = 0; i < this.edges.length; i++) {
+                    const start = projected2D[this.edges[i][0]];
+                    const end = projected2D[this.edges[i][1]];
+
                     const deltaX = end[0] - start[0];
                     const deltaY = end[1] - start[1];
                     const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
                     const angle = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
 
-                    const edgeElement = document.createElement('div');
-                    edgeElement.className = 'edge';
-                    edgeElement.style.left = start[0] + 'px';
-                    edgeElement.style.top = start[1] + 'px';
-                    edgeElement.style.width = length + 'px';
-                    edgeElement.style.transform = `rotate(${angle}deg)`;
+                    // Uniform 1px lines, as before: no depth weighting.
+                    let opacity = 1;
 
-                    // Use consistent colors across all devices
-                    if (index < 12) {
-                        edgeElement.style.backgroundColor = '#DB2B39'; // Darker shade
-                    } else if (index < 24) {
-                        edgeElement.style.backgroundColor = '#29335c'; // Darker shade
-                    } else {
-                        edgeElement.style.backgroundColor = '#8d99ae'; // Darker shade
+                    // Energy travelling along the eight 4D connectors, which is
+                    // the part of a tesseract that is genuinely hard to read, so
+                    // they are never allowed to fade into the paper.
+                    if (i >= 24) {
+                        const wave = 0.5 + 0.5 * Math.sin(this.time * 0.0035 - (i - 24) * 0.8);
+                        opacity = 0.78 + 0.22 * wave;
                     }
 
-                    this.container.appendChild(edgeElement);
-                });
+                    // Because edges are 100px objects scaled along their own
+                    // axis, this is a pure transform: no layout, no reflow.
+                    const element = this.edgeElements[i];
+                    element.style.transform =
+                        `translate3d(${start[0].toFixed(2)}px, ${start[1].toFixed(2)}px, 0)` +
+                        ` rotate(${angle.toFixed(2)}deg)` +
+                        ` scaleX(${(length / 100).toFixed(4)})`;
+                    element.style.opacity = opacity.toFixed(3);
+                }
             }
 
             animate(timestamp) {
-                // Calculate delta time since last frame
-                const deltaTime = timestamp - this.lastTimestamp;
+                if (!this.lastTimestamp) this.lastTimestamp = timestamp;
+
+                let delta = timestamp - this.lastTimestamp;
                 this.lastTimestamp = timestamp;
-                
-                // Calculate how many time steps to simulate
-                // This ensures consistent animation speed regardless of frame rate
-                const steps = Math.max(1, Math.floor(deltaTime / this.timeStep));
-                
-                // Apply mobile speed multiplier to make animations faster on mobile
-                const timeScale = (1 / steps) * mobileSpeedMultiplier;
-                
-                // Update rotation angles with time scaling for consistent speed
+                if (delta < 0) delta = 0;
+                if (delta > 100) delta = 100;
+                this.time += delta;
+
+                // Parallax toward the pointer; a gentle drift when there is none.
+                if (this.hasPointer) {
+                    const nx = (this.pointerX / window.innerWidth - 0.5) * 2;
+                    const ny = (this.pointerY / window.innerHeight - 0.5) * 2;
+                    this.targetTiltX = -ny * 12;
+                    this.targetTiltY = nx * 16;
+                } else {
+                    this.targetTiltX = Math.sin(this.time * 0.00031) * 3;
+                    this.targetTiltY = Math.cos(this.time * 0.00023) * 4;
+                }
+                this.tiltX += (this.targetTiltX - this.tiltX) * 0.06;
+                this.tiltY += (this.targetTiltY - this.tiltY) * 0.06;
+
+                // Fixed-step rotation, so the speed matches on 60 Hz and 120 Hz.
+                const steps = Math.max(1, Math.min(6, Math.floor(delta / this.timeStep)));
+                const timeScale = 1 / steps;
+
                 for (let i = 0; i < steps; i++) {
                     for (let j = 0; j < this.rotationAngles.length; j++) {
-                        this.rotationAngles[j] += this.rotationSpeeds[j] * timeScale;
+                        this.rotationAngles[j] += (this.rotationSpeeds[j] + this.spin) * timeScale;
                     }
+                    // Momentum from dragging bleeds off instead of stopping dead.
+                    this.spin *= 0.94;
                 }
+                if (Math.abs(this.spin) < 0.00002) this.spin = 0;
 
                 // Use requestAnimationFrame with a callback that checks if the component is still mounted
                 // This prevents unnecessary renders if the page is navigated away from
                 if (this.container && document.body.contains(this.container)) {
                     this.render();
-                    if (!prefersReducedMotion) requestAnimationFrame((ts) => this.animate(ts));
+                    requestAnimationFrame((ts) => this.animate(ts));
                 }
             }
         }
