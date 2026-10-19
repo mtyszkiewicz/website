@@ -88,84 +88,119 @@
     <script>
         // ===== CONFIGURABLE PARAMETERS =====
         const RAIN_CONFIG = {
-            // Droplet count
+            // Population
             DESKTOP_COUNT: 100,
             MOBILE_COUNT: 60,
-            
-            // Physics
-            INITIAL_SPEED_MIN: 8,        // Minimum initial falling speed
-            INITIAL_SPEED_MAX: 24,       // Maximum initial falling speed
-            ACCELERATION_MIN: 0.15,      // Minimum gravity acceleration
-            ACCELERATION_MAX: 0.25,      // Maximum gravity acceleration
-            MAX_SPEED_MIN: 25,           // Minimum terminal velocity
-            MAX_SPEED_MAX: 35,           // Maximum terminal velocity
-            
-            // Appearance
-            LENGTH_MEAN: 25,             // Average droplet length
-            LENGTH_STD_DEV: 8,           // Length variation
-            LENGTH_MIN: 8,               // Minimum length
-            LENGTH_MAX: 45,              // Maximum length
-            SIZE_MEAN: 0.8,              // Average droplet thickness
-            SIZE_STD_DEV: 0.3,           // Thickness variation
-            SIZE_MIN: 0.4,               // Minimum thickness
-            SIZE_MAX: 1.5,               // Maximum thickness
-            OPACITY_MIN: 0.6,            // Minimum opacity
-            OPACITY_MAX: 1.0,            // Maximum opacity
-            
-            // Movement
-            ANGLE_VARIATION: 4,          // Angle variation in degrees
-            DRIFT_STRENGTH: 0.03,        // Wind drift strength
-            WOBBLE_STRENGTH: 0.3,        // Wobble effect strength
-            WOBBLE_SPEED_MIN: 0.02,      // Minimum wobble speed
-            WOBBLE_SPEED_MAX: 0.05,      // Maximum wobble speed
-            
-            // Colors (RGB values)
-            COLOR_R: 0,                  // Red component (0-255)
-            COLOR_G: 0,                  // Green component (0-255)
-            COLOR_B: 0,                  // Blue component (0-255)
-            
-            // Depth and visual effects
-            DEPTH_FACTOR_MIN: 0.5,       // Minimum depth factor for size scaling
-            DEPTH_FACTOR_MAX: 1.3,       // Maximum depth factor for size scaling
-            OPACITY_DEPTH_MIN: 0.6,      // Minimum opacity multiplier for depth
-            OPACITY_DEPTH_MAX: 1.0,      // Maximum opacity multiplier for depth
-            
-            // Highlight effects
-            HIGHLIGHT_COLOR_R: 128,      // Highlight red component
-            HIGHLIGHT_COLOR_G: 128,      // Highlight green component
-            HIGHLIGHT_COLOR_B: 128,      // Highlight blue component
-            HIGHLIGHT_OPACITY: 0.3,      // Highlight opacity multiplier
-            HIGHLIGHT_WIDTH: 0.2,        // Highlight width as fraction of droplet size
-            HIGHLIGHT_START: 0.3,        // Highlight start position (0-1 along droplet)
-            HIGHLIGHT_END: 0.7,          // Highlight end position (0-1 along droplet)
-            
-            // Mobile optimizations
-            MOBILE_LINE_WIDTH: 0.6,      // Mobile line width multiplier
-            
-            // Wind and environmental effects
-            WIND_FREQUENCY: 0.003,       // Wind oscillation frequency
-            WIND_SPATIAL_FREQ: 0.0003,   // Spatial wind variation frequency
-            WIND_STRENGTH: 0.003,        // Wind effect strength
-            
-            // Reset positioning
-            RESET_HEIGHT_VARIATION: 300, // Random height variation when resetting droplets
-            SPAWN_MARGIN: 50,            // Horizontal margin for droplet spawning
+
+            /* Drop size = how close the drop is to the camera. A shower covers a
+               huge depth range, so size is sampled from a bell curve and every
+               other property is derived from it. */
+            SIZE_MEAN: 0.85,
+            SIZE_STD_DEV: 0.32,
+            SIZE_MIN: 0.35,
+            SIZE_MAX: 1.5,
+
+            /* Fall speed. Terminal velocity grows with drop size with a
+               square-root falloff (v ~ sqrt(diameter), as measured on real
+               raindrops), so big drops fall faster without an unrealistic
+               spread. Units are pixels per 1/60 s tick. */
+            TERMINAL_SPEED_MIN: 9,
+            TERMINAL_SPEED_MAX: 32,
+            TERMINAL_EXPONENT: 0.6,
+            SPAWN_SPEED_MIN: 0.45,     // drops enter the frame at 45-80 % of
+            SPAWN_SPEED_MAX: 0.80,     // terminal velocity, then settle
+            RESPONSE_LARGE: 0.06,      // how quickly a heavy drop settles
+            RESPONSE_SMALL: 0.16,      // light drops settle quicker
+
+            /* Streak length = speed x exposure. A camera records the trail a
+               drop covers while the shutter is open, which is why fast drops
+               read as long streaks and slow ones as dashes. */
+            EXPOSURE: 1.0,
+            LENGTH_JITTER: 0.15,       // +-15 % individual variation
+            LENGTH_MIN: 6,
+            LENGTH_MAX: 46,
+
+            /* Streak silhouette: an engraved taper, wide at the drop and drawn
+               out to a point at the tail. */
+            TAPER_MIN: 0.10,           // tail half-width / head half-width
+            TAPER_MAX: 0.40,
+            HEAD_WIDTH: 1.25,          // the drop itself is wider than its trail
+            MIN_HALF_WIDTH: 0.28,      // keeps the thinnest drops visible
+            SEGMENTS: 5,               // samples down each side
+            CAP_SEGMENTS: 8,           // samples around the rounded head
+
+            /* Wind. Every drop reads the same field, so the whole screen leans
+               together like one weather system; gust fronts travel sideways so
+               neighbours stay nearly parallel. */
+            WIND_BASE: 0.45,
+            WIND_GUST: 1.2,
+            WIND_FREQUENCY: 0.006,     // rad per tick -> ~17 s gust cycle
+            WIND_TRAVEL: 0.0025,       // rad per px -> fronts cross the page
+            WIND_CATCH_LARGE: 0.55,    // heavy drops ignore most of the wind
+            WIND_CATCH_SMALL: 0.95,    // light drops are carried by it
+            SLANT_JITTER: 0.08,        // small per-drop individuality
+
+            // Always-on turbulence
+            WOBBLE_STRENGTH: 0.12,
+            WOBBLE_SPEED_MIN: 0.02,
+            WOBBLE_SPEED_MAX: 0.05,
+
+            /* Depth of field, posterised into flat ink densities. Fewer levels
+               gives a flatter, more printed look and fewer fill calls. */
+            INK_LEVELS: 6,
+            FAR_ALPHA: 0.30,           // distant rain is faint
+            NEAR_ALPHA: 0.92,
+
+            /* Specular highlight. The light is treated as coming from the left,
+               so the highlight on every drop sits off-centre on its left side,
+               the way it does on a real water column. */
+            HIGHLIGHT_R: 128,
+            HIGHLIGHT_G: 128,
+            HIGHLIGHT_B: 128,
+            HIGHLIGHT_ALPHA: 0.55,
+            HIGHLIGHT_WIDTH: 0.30,     // fraction of the drop width
+            HIGHLIGHT_OFFSET: 0.42,    // fraction of the local half-width
+            HIGHLIGHT_START: 0.50,     // along the streak: 0 tail, 1 head
+            HIGHLIGHT_END: 0.97,
+            HIGHLIGHT_MIN_SIZE: 0.75,  // only drops wide enough to show it
+
+            // Ink colour
+            COLOR_R: 0,
+            COLOR_G: 0,
+            COLOR_B: 0,
+
+            // Recycling
+            RESET_HEIGHT_VARIATION: 260,
+            SPAWN_MARGIN: 60,
         };
-        
+
         // Detect mobile for optimizations
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
-        
-        
+
+
         // Speed multiplier for mobile devices
         const mobileSpeedMultiplier = isMobile ? 1.4 : 1.0;
+
+        // Respect the OS "reduce motion" setting: draw the scene, then freeze it
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        const TAU = Math.PI * 2;
 
         // Helper function to generate random numbers with normal distribution (bell curve)
         function randomNormal(mean, stdDev) {
             // Box-Muller transform
-            const u1 = Math.random();
+            const u1 = 1 - Math.random(); // (0, 1], so log() is always finite
             const u2 = Math.random();
-            const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+            const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(TAU * u2);
             return z0 * stdDev + mean;
+        }
+
+        function clamp(value, min, max) {
+            return value < min ? min : (value > max ? max : value);
+        }
+
+        function mix(a, b, t) {
+            return a + (b - a) * t;
         }
 
         class RainSystem {
@@ -175,237 +210,359 @@
                 this.rainDrops = [];
                 this.time = 0;
                 this.lastTimestamp = 0;
-                this.timeStep = 1000 / 60; // Target 60 FPS time step
+                this.accumulator = 0;
+                this.timeStep = 1000 / 60; // physics is defined per 1/60 s tick
+
+                /* Drops are bucketed by ink density before each draw, so a whole
+                   shower costs a handful of fill calls instead of one draw per
+                   drop. The arrays are reused to keep the GC quiet. */
+                this.levels = RAIN_CONFIG.INK_LEVELS;
+                this.streakBuckets = [];
+                this.headBuckets = [];
+                this.highlightBuckets = [];
+                for (let i = 0; i < this.levels; i++) {
+                    this.streakBuckets.push([]);
+                    this.headBuckets.push([]);
+                    this.highlightBuckets.push([]);
+                }
+
                 this.resize();
                 this.init();
-                this.animate(0);
+
+                /* Pre-roll the simulation so the first painted frame is an
+                   already-settled shower instead of a row of freshly spawned
+                   vertical dashes. */
+                for (let i = 0; i < 90; i++) {
+                    this.updateRain(1);
+                    this.time += 1;
+                }
+                this.drawRain();
+
+                if (!prefersReducedMotion) {
+                    requestAnimationFrame((ts) => this.animate(ts));
+                }
+
                 window.addEventListener('resize', () => this.resize());
             }
 
             resize() {
-                this.canvas.width = window.innerWidth;
-                this.canvas.height = window.innerHeight;
-                this.width = this.canvas.width;
-                this.height = this.canvas.height;
+                const dpr = Math.min(window.devicePixelRatio || 1, 2);
+                this.width = window.innerWidth;
+                this.height = window.innerHeight;
+                this.canvas.width = Math.round(this.width * dpr);
+                this.canvas.height = Math.round(this.height * dpr);
+                // Keep drawing in CSS pixels; the backing store stays sharp.
+                this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                if (this.rainDrops.length) this.drawRain();
+            }
+
+            // ---- Properties derived from a drop's size ----------------------
+
+            // Apparent size -> 0 (far, thin) .. 1 (near, fat)
+            sizeToDepth(size) {
+                const c = RAIN_CONFIG;
+                return clamp((size - c.SIZE_MIN) / (c.SIZE_MAX - c.SIZE_MIN), 0, 1);
+            }
+
+            // Half-width at the widest point: the drop itself, not the trail.
+            headHalfWidth(drop) {
+                return Math.max(RAIN_CONFIG.MIN_HALF_WIDTH, drop.size * 0.5 * RAIN_CONFIG.HEAD_WIDTH);
+            }
+
+            // Representative size of an ink level, used to scale line widths.
+            sizeForLevel(level) {
+                const c = RAIN_CONFIG;
+                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
+                return mix(c.SIZE_MIN, c.SIZE_MAX, l);
+            }
+
+            levelAlpha(level) {
+                const c = RAIN_CONFIG;
+                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
+                return mix(c.FAR_ALPHA, c.NEAR_ALPHA, l);
+            }
+
+            ink(alpha) {
+                const c = RAIN_CONFIG;
+                return `rgba(${c.COLOR_R}, ${c.COLOR_G}, ${c.COLOR_B}, ${alpha})`;
+            }
+
+            highlightColor(level) {
+                const c = RAIN_CONFIG;
+                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
+                const alpha = c.HIGHLIGHT_ALPHA * mix(0.55, 1, l);
+                return `rgba(${c.HIGHLIGHT_R}, ${c.HIGHLIGHT_G}, ${c.HIGHLIGHT_B}, ${alpha})`;
+            }
+
+            /* One shared wind field: a slow gust cycle plus fronts that travel
+               sideways, so neighbouring drops lean almost the same way and the
+               screen reads as a single weather system. */
+            windAt(x) {
+                const c = RAIN_CONFIG;
+                const phase = this.time * c.WIND_FREQUENCY - x * c.WIND_TRAVEL;
+                return c.WIND_BASE + c.WIND_GUST * (Math.sin(phase) * 0.72 + Math.sin(phase * 2.3 + 1.7) * 0.28);
+            }
+
+            /* Give a drop every property that follows from its size. Called at
+               spawn and again whenever the drop is recycled. */
+            seed(drop, initial) {
+                const c = RAIN_CONFIG;
+
+                drop.size = clamp(randomNormal(c.SIZE_MEAN, c.SIZE_STD_DEV), c.SIZE_MIN, c.SIZE_MAX);
+                drop.depth = this.sizeToDepth(drop.size);
+
+                // Terminal velocity grows with the drop, sub-linearly.
+                drop.terminal = mix(
+                    c.TERMINAL_SPEED_MIN,
+                    c.TERMINAL_SPEED_MAX,
+                    Math.pow(drop.depth, c.TERMINAL_EXPONENT)
+                );
+
+                // Heavy drops change speed slowly and barely notice the wind.
+                drop.response = mix(c.RESPONSE_LARGE, c.RESPONSE_SMALL, 1 - drop.depth);
+                drop.windCatch = mix(c.WIND_CATCH_LARGE, c.WIND_CATCH_SMALL, 1 - drop.depth);
+
+                // Individual character, fixed for the lifetime of the drop so
+                // nothing flickers as it falls.
+                drop.taper = mix(c.TAPER_MIN, c.TAPER_MAX, Math.random());
+                drop.slant = (Math.random() - 0.5) * c.SLANT_JITTER;
+                drop.wobble = Math.random() * TAU;
+                drop.wobbleSpeed = mix(c.WOBBLE_SPEED_MIN, c.WOBBLE_SPEED_MAX, Math.random());
+                drop.jitter = 1 + (Math.random() - 0.5) * 2 * c.LENGTH_JITTER;
+
+                // Ink density, and therefore the bucket this drop is drawn in.
+                drop.level = Math.round(drop.depth * (this.levels - 1));
+
+                // Rain has usually been falling for a while before it enters the
+                // frame, so drops arrive at a good fraction of terminal speed.
+                drop.vy = drop.terminal * mix(c.SPAWN_SPEED_MIN, c.SPAWN_SPEED_MAX, Math.random());
+                drop.vx = 0;
+                drop.dirX = 0;
+                drop.dirY = 1;
+                drop.length = clamp(drop.vy * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
+
+                drop.x = Math.random() * (this.width + c.SPAWN_MARGIN * 2) - c.SPAWN_MARGIN;
+                drop.y = initial
+                    ? Math.random() * this.height - this.height
+                    : -drop.length - Math.random() * c.RESET_HEIGHT_VARIATION;
             }
 
             init() {
                 // Adjust count based on device capability using config
                 const rainCount = isMobile ? RAIN_CONFIG.MOBILE_COUNT : RAIN_CONFIG.DESKTOP_COUNT;
 
-                // Create rain drops with configurable parameters
                 for (let i = 0; i < rainCount; i++) {
-                    // Use normal distribution for length with config values
-                    let length = randomNormal(RAIN_CONFIG.LENGTH_MEAN, RAIN_CONFIG.LENGTH_STD_DEV);
-                    length = Math.max(RAIN_CONFIG.LENGTH_MIN, Math.min(RAIN_CONFIG.LENGTH_MAX, length));
-                    
-                    // Create droplet sizes with config values
-                    let size = randomNormal(RAIN_CONFIG.SIZE_MEAN, RAIN_CONFIG.SIZE_STD_DEV);
-                    size = Math.max(RAIN_CONFIG.SIZE_MIN, Math.min(RAIN_CONFIG.SIZE_MAX, size));
-                    
-                    // Generate size first to determine speed based on width
-                    // Wider droplets should go faster
-                    const sizeFactor = (size - RAIN_CONFIG.SIZE_MIN) / (RAIN_CONFIG.SIZE_MAX - RAIN_CONFIG.SIZE_MIN);
-                    
-                    // Calculate speed based on size (wider = faster)
-                    const speedRange = RAIN_CONFIG.MAX_SPEED_MAX - RAIN_CONFIG.MAX_SPEED_MIN;
-                    const maxSpeed = RAIN_CONFIG.MAX_SPEED_MIN + (sizeFactor * speedRange);
-                    const initialSpeed = Math.random() * (RAIN_CONFIG.INITIAL_SPEED_MAX - RAIN_CONFIG.INITIAL_SPEED_MIN) + RAIN_CONFIG.INITIAL_SPEED_MIN;
-                    
-                    // Use size as the primary factor for depth perception
-                    const depthFactorRange = RAIN_CONFIG.DEPTH_FACTOR_MAX - RAIN_CONFIG.DEPTH_FACTOR_MIN;
-                    const depthFactor = RAIN_CONFIG.DEPTH_FACTOR_MIN + (sizeFactor * depthFactorRange);
-                    
-                    // Adjust length based on size (wider droplets are also longer)
-                    const depthAdjustedSize = size;
-                    const depthAdjustedLength = length * depthFactor;
-                    
-                    // Adjust opacity based on size (wider droplets are more opaque)
-                    const baseOpacity = Math.random() * (RAIN_CONFIG.OPACITY_MAX - RAIN_CONFIG.OPACITY_MIN) + RAIN_CONFIG.OPACITY_MIN;
-                    const opacityDepthRange = RAIN_CONFIG.OPACITY_DEPTH_MAX - RAIN_CONFIG.OPACITY_DEPTH_MIN;
-                    const depthAdjustedOpacity = baseOpacity * (RAIN_CONFIG.OPACITY_DEPTH_MIN + sizeFactor * opacityDepthRange);
+                    const drop = {};
+                    this.seed(drop, true);
+                    this.rainDrops.push(drop);
+                }
+            }
 
-                    // Calculate acceleration inversely related to max speed (slower droplets accelerate faster)
-                    const accelerationRange = RAIN_CONFIG.ACCELERATION_MAX - RAIN_CONFIG.ACCELERATION_MIN;
-                    const acceleration = RAIN_CONFIG.ACCELERATION_MAX - (sizeFactor * accelerationRange);
+            updateRain(dt) {
+                const c = RAIN_CONFIG;
 
-                    this.rainDrops.push({
-                        x: Math.random() * (this.width + 100) - 50,
-                        y: Math.random() * this.height - this.height,
-                        speed: initialSpeed,
-                        acceleration: acceleration,
-                        maxSpeed: maxSpeed,
-                        length: depthAdjustedLength,
-                        size: depthAdjustedSize,
-                        opacity: depthAdjustedOpacity,
-                        angle: Math.random() * RAIN_CONFIG.ANGLE_VARIATION - (RAIN_CONFIG.ANGLE_VARIATION / 2),
-                        drift: (Math.random() - 0.5) * RAIN_CONFIG.DRIFT_STRENGTH,
-                        wobble: Math.random() * 0.5,
-                        wobbleSpeed: RAIN_CONFIG.WOBBLE_SPEED_MIN + Math.random() * (RAIN_CONFIG.WOBBLE_SPEED_MAX - RAIN_CONFIG.WOBBLE_SPEED_MIN),
-                        depthFactor: depthFactor // Store for later use when resetting droplets
-                    });
+                for (let i = 0; i < this.rainDrops.length; i++) {
+                    const drop = this.rainDrops[i];
+                    const settle = 1 - Math.exp(-drop.response * dt);
+
+                    /* Air drag rather than a hard speed clamp: the drop settles
+                       at its terminal velocity, so a newly spawned drop is
+                       visibly slower (and shorter) than the same drop a second
+                       later. */
+                    drop.vy += (drop.terminal - drop.vy) * settle;
+
+                    // Light drops are carried by the wind, heavy ones keep
+                    // falling almost straight, plus a little turbulence.
+                    const targetVx = this.windAt(drop.x) * drop.windCatch
+                        + drop.slant
+                        + Math.sin(drop.wobble) * c.WOBBLE_STRENGTH;
+                    drop.vx += (targetVx - drop.vx) * settle;
+
+                    drop.wobble += drop.wobbleSpeed * dt;
+                    drop.x += drop.vx * dt;
+                    drop.y += drop.vy * dt;
+
+                    // The streak is the distance covered during the exposure, so
+                    // it is always drawn along the true direction of travel.
+                    drop.length = clamp(drop.vy * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
+                    const inv = 1 / Math.hypot(drop.vx, drop.vy);
+                    drop.dirX = drop.vx * inv;
+                    drop.dirY = drop.vy * inv;
+
+                    // Recycle once the whole streak has left the frame.
+                    if (drop.y - drop.length > this.height) {
+                        this.seed(drop, false);
+                        continue;
+                    }
+
+                    // Keep drifting drops inside the field instead of losing them.
+                    const margin = drop.length + c.SPAWN_MARGIN;
+                    const span = this.width + margin * 2;
+                    if (drop.x > this.width + margin) {
+                        drop.x -= span;
+                    } else if (drop.x < -margin) {
+                        drop.x += span;
+                    }
+                }
+            }
+
+            /* Trace one tapered silhouette: a point at the tail, widening to the
+               drop at the head, closed with a rounded cap. Straight, because a
+               trail recorded in a single instant really is straight. */
+            traceStreak(ctx, drop) {
+                const c = RAIN_CONFIG;
+                const len = drop.length;
+                const dirX = drop.dirX;
+                const dirY = drop.dirY;
+                const perpX = -dirY;   // left of travel
+                const perpY = dirX;
+                const tailX = drop.x - dirX * len;
+                const tailY = drop.y - dirY * len;
+                const wHead = this.headHalfWidth(drop);
+                const wTail = wHead * drop.taper;
+
+                // One side, tail -> head.
+                for (let i = 0; i <= c.SEGMENTS; i++) {
+                    const t = i / c.SEGMENTS;
+                    const w = wTail + (wHead - wTail) * Math.pow(t, 0.7);
+                    const x = tailX + dirX * len * t + perpX * w;
+                    const y = tailY + dirY * len * t + perpY * w;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
                 }
 
-                // Floating particles removed
+                // Round the head: sweep from one side to the other through the
+                // point of travel, where the drop itself sits.
+                for (let i = 1; i < c.CAP_SEGMENTS; i++) {
+                    const phi = Math.PI * (i / c.CAP_SEGMENTS);
+                    const cos = Math.cos(phi);
+                    const sin = Math.sin(phi);
+                    ctx.lineTo(
+                        drop.x + (perpX * cos + dirX * sin) * wHead,
+                        drop.y + (perpY * cos + dirY * sin) * wHead
+                    );
+                }
+
+                // Back down the other side.
+                for (let i = c.SEGMENTS; i >= 0; i--) {
+                    const t = i / c.SEGMENTS;
+                    const w = wTail + (wHead - wTail) * Math.pow(t, 0.7);
+                    ctx.lineTo(
+                        tailX + dirX * len * t - perpX * w,
+                        tailY + dirY * len * t - perpY * w
+                    );
+                }
+
+                ctx.closePath();
             }
 
-            updateRain(timeScale = 1) {
-                this.rainDrops.forEach(drop => {
-                    // Apply gravity acceleration
-                    drop.speed += drop.acceleration * timeScale;
-                    
-                    // Cap the speed at terminal velocity
-                    if (drop.speed > drop.maxSpeed) {
-                        drop.speed = drop.maxSpeed;
-                    }
-                    
-                    // Update wobble for natural movement
-                    drop.wobble += drop.wobbleSpeed * timeScale;
-                    
-                    // Update position with realistic physics
-                    drop.y += drop.speed * timeScale;
-                    drop.x += drop.drift * timeScale;
-                    
-                    // Add subtle wobble effect
-                    drop.x += Math.sin(drop.wobble) * RAIN_CONFIG.WOBBLE_STRENGTH * timeScale;
-                    
-                    // Gentle wind effect using config values
-                    drop.drift += Math.sin(this.time * RAIN_CONFIG.WIND_FREQUENCY + drop.x * RAIN_CONFIG.WIND_SPATIAL_FREQ) * RAIN_CONFIG.WIND_STRENGTH * timeScale;
-                    
-                    // Reset when off screen
-                    if (drop.y > this.height + drop.length) {
-                        drop.y = -drop.length - Math.random() * RAIN_CONFIG.RESET_HEIGHT_VARIATION;
-                        drop.x = Math.random() * (this.width + RAIN_CONFIG.SPAWN_MARGIN * 2) - RAIN_CONFIG.SPAWN_MARGIN;
-                        
-                        // Generate new base properties using config
-                        let baseLength = randomNormal(RAIN_CONFIG.LENGTH_MEAN, RAIN_CONFIG.LENGTH_STD_DEV);
-                        baseLength = Math.max(RAIN_CONFIG.LENGTH_MIN, Math.min(RAIN_CONFIG.LENGTH_MAX, baseLength));
-                        let baseSize = randomNormal(RAIN_CONFIG.SIZE_MEAN, RAIN_CONFIG.SIZE_STD_DEV);
-                        baseSize = Math.max(RAIN_CONFIG.SIZE_MIN, Math.min(RAIN_CONFIG.SIZE_MAX, baseSize));
-                        
-                        // Calculate size factor for speed determination (wider = faster)
-                        const sizeFactor = (baseSize - RAIN_CONFIG.SIZE_MIN) / (RAIN_CONFIG.SIZE_MAX - RAIN_CONFIG.SIZE_MIN);
-                        
-                        // Calculate speed based on size (wider = faster)
-                        const speedRange = RAIN_CONFIG.MAX_SPEED_MAX - RAIN_CONFIG.MAX_SPEED_MIN;
-                        drop.maxSpeed = RAIN_CONFIG.MAX_SPEED_MIN + (sizeFactor * speedRange);
-                        drop.speed = Math.random() * (RAIN_CONFIG.INITIAL_SPEED_MAX - RAIN_CONFIG.INITIAL_SPEED_MIN) + RAIN_CONFIG.INITIAL_SPEED_MIN;
-                        drop.drift = (Math.random() - 0.5) * RAIN_CONFIG.DRIFT_STRENGTH;
-                        drop.wobble = Math.random() * 0.5;
-                        
-                        // Use size as the primary factor for depth perception
-                        const depthFactorRange = RAIN_CONFIG.DEPTH_FACTOR_MAX - RAIN_CONFIG.DEPTH_FACTOR_MIN;
-                        drop.depthFactor = RAIN_CONFIG.DEPTH_FACTOR_MIN + (sizeFactor * depthFactorRange);
-                        
-                        // Calculate acceleration inversely related to max speed (slower droplets accelerate faster)
-                        const accelerationRange = RAIN_CONFIG.ACCELERATION_MAX - RAIN_CONFIG.ACCELERATION_MIN;
-                        drop.acceleration = RAIN_CONFIG.ACCELERATION_MAX - (sizeFactor * accelerationRange);
-                        
-                        // Apply size-based adjustments
-                        drop.length = baseLength * drop.depthFactor;
-                        drop.size = baseSize;
-                        
-                        // Adjust opacity based on size (wider droplets are more opaque)
-                        const baseOpacity = Math.random() * (RAIN_CONFIG.OPACITY_MAX - RAIN_CONFIG.OPACITY_MIN) + RAIN_CONFIG.OPACITY_MIN;
-                        const opacityDepthRange = RAIN_CONFIG.OPACITY_DEPTH_MAX - RAIN_CONFIG.OPACITY_DEPTH_MIN;
-                        drop.opacity = baseOpacity * (RAIN_CONFIG.OPACITY_DEPTH_MIN + sizeFactor * opacityDepthRange);
-                    }
-                    
-                    // Wrap horizontally if drifted too far
-                    if (drop.x > this.width + 50) {
-                        drop.x = -50;
-                    } else if (drop.x < -50) {
-                        drop.x = this.width + 50;
-                    }
-                });
-            }
+            // Specular highlight: off-centre, on the lit side of the column.
+            traceHighlight(ctx, drop) {
+                const c = RAIN_CONFIG;
+                const len = drop.length;
+                const offset = this.headHalfWidth(drop) * c.HIGHLIGHT_OFFSET;
+                const ox = -drop.dirY * offset;
+                const oy = drop.dirX * offset;
 
+                for (let i = 0; i < 2; i++) {
+                    const t = i === 0 ? c.HIGHLIGHT_START : c.HIGHLIGHT_END;
+                    const x = drop.x - drop.dirX * len * (1 - t) + ox;
+                    const y = drop.y - drop.dirY * len * (1 - t) + oy;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+            }
 
             drawRain() {
-                this.rainDrops.forEach(drop => {
-                    this.ctx.save();
-                    
-                    // Calculate end point of rain stripe
-                    const endX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length;
-                    const endY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length;
-                    
-                    // Draw main droplet body
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(drop.x, drop.y);
-                    this.ctx.lineTo(endX, endY);
-                    
-                    if (isMobile) {
-                        // Use config colors for mobile
-                        this.ctx.strokeStyle = `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity})`;
-                        this.ctx.lineWidth = drop.size * RAIN_CONFIG.MOBILE_LINE_WIDTH;
-                    } else {
-                        // Create gradient using config colors
-                        const gradient = this.ctx.createLinearGradient(drop.x, drop.y, endX, endY);
-                        gradient.addColorStop(0, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity * 0.3})`);
-                        gradient.addColorStop(0.5, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity})`);
-                        gradient.addColorStop(1, `rgba(${RAIN_CONFIG.COLOR_R}, ${RAIN_CONFIG.COLOR_G}, ${RAIN_CONFIG.COLOR_B}, ${drop.opacity * 0.3})`);
-                        this.ctx.strokeStyle = gradient;
-                        this.ctx.lineWidth = drop.size;
-                        
-                        // Add subtle shadow effect
-                        this.ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
-                        this.ctx.shadowBlur = 1;
-                        this.ctx.shadowOffsetX = 0.5;
-                        this.ctx.shadowOffsetY = 0.5;
+                const ctx = this.ctx;
+                const c = RAIN_CONFIG;
+                const levels = this.levels;
+
+                // Bucket the drops by ink density: this is what makes the depth
+                // bands read, and it collapses the draw calls.
+                for (let l = 0; l < levels; l++) {
+                    this.streakBuckets[l].length = 0;
+                    this.headBuckets[l].length = 0;
+                    this.highlightBuckets[l].length = 0;
+                }
+                for (let i = 0; i < this.rainDrops.length; i++) {
+                    const drop = this.rainDrops[i];
+                    this.streakBuckets[drop.level].push(drop);
+                    // The drop is one density darker than its own trail, which is
+                    // the head-biased fade that real streaks have.
+                    this.headBuckets[Math.min(levels - 1, drop.level + 1)].push(drop);
+                    if (drop.size >= c.HIGHLIGHT_MIN_SIZE) {
+                        this.highlightBuckets[drop.level].push(drop);
                     }
-                    
-                    this.ctx.lineCap = 'round';
-                    this.ctx.stroke();
-                    
-                    // Draw droplet highlight on all platforms
-                    this.ctx.shadowColor = 'transparent';
-                    this.ctx.shadowBlur = 0;
-                    this.ctx.shadowOffsetX = 0;
-                    this.ctx.shadowOffsetY = 0;
-                    
-                    // Add highlight streak using config values
-                    const highlightX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_START;
-                    const highlightY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_START;
-                    const highlightEndX = drop.x + Math.sin(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_END;
-                    const highlightEndY = drop.y + Math.cos(drop.angle * Math.PI / 180) * drop.length * RAIN_CONFIG.HIGHLIGHT_END;
-                    
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(highlightX, highlightY);
-                    this.ctx.lineTo(highlightEndX, highlightEndY);
-                    this.ctx.strokeStyle = `rgba(${RAIN_CONFIG.HIGHLIGHT_COLOR_R}, ${RAIN_CONFIG.HIGHLIGHT_COLOR_G}, ${RAIN_CONFIG.HIGHLIGHT_COLOR_B}, ${drop.opacity * RAIN_CONFIG.HIGHLIGHT_OPACITY})`;
-                    this.ctx.lineWidth = drop.size * RAIN_CONFIG.HIGHLIGHT_WIDTH;
-                    this.ctx.stroke();
-                    
-                    this.ctx.restore();
-                });
+                }
+
+                ctx.clearRect(0, 0, this.width, this.height);
+
+                // 1. Trails
+                for (let l = 0; l < levels; l++) {
+                    const list = this.streakBuckets[l];
+                    if (!list.length) continue;
+                    ctx.fillStyle = this.ink(this.levelAlpha(l));
+                    ctx.beginPath();
+                    for (let i = 0; i < list.length; i++) this.traceStreak(ctx, list[i]);
+                    ctx.fill();
+                }
+
+                // 2. The drops themselves
+                for (let l = 0; l < levels; l++) {
+                    const list = this.headBuckets[l];
+                    if (!list.length) continue;
+                    ctx.fillStyle = this.ink(this.levelAlpha(l));
+                    ctx.beginPath();
+                    for (let i = 0; i < list.length; i++) {
+                        const drop = list[i];
+                        const r = this.headHalfWidth(drop);
+                        // moveTo first, otherwise arc() joins the previous subpath
+                        ctx.moveTo(drop.x + r, drop.y);
+                        ctx.arc(drop.x, drop.y, r, 0, TAU);
+                    }
+                    ctx.fill();
+                }
+
+                // 3. Highlights
+                ctx.lineCap = 'round';
+                for (let l = 0; l < levels; l++) {
+                    const list = this.highlightBuckets[l];
+                    if (!list.length) continue;
+                    ctx.strokeStyle = this.highlightColor(l);
+                    ctx.lineWidth = c.HIGHLIGHT_WIDTH * this.sizeForLevel(l);
+                    ctx.beginPath();
+                    for (let i = 0; i < list.length; i++) this.traceHighlight(ctx, list[i]);
+                    ctx.stroke();
+                }
             }
 
-
             animate(timestamp) {
-                // Calculate delta time since last frame
-                const deltaTime = timestamp - this.lastTimestamp;
+                if (!this.lastTimestamp) this.lastTimestamp = timestamp;
+
+                let delta = timestamp - this.lastTimestamp;
                 this.lastTimestamp = timestamp;
-                
-                // Clear canvas
-                this.ctx.clearRect(0, 0, this.width, this.height);
-                
-                // Calculate how many time steps to simulate
-                // This ensures consistent animation speed regardless of frame rate
-                const steps = Math.max(1, Math.floor(deltaTime / this.timeStep));
-                
-                // Apply mobile speed multiplier to make animations faster on mobile
-                const timeIncrement = (1 / steps) * mobileSpeedMultiplier;
-                
-                // Update multiple times if needed to maintain consistent speed
-                for (let i = 0; i < steps; i++) {
-                    // Update rain with normalized time increment
-                    this.updateRain(timeIncrement);
-                    this.time += timeIncrement;
+                // A frame after a background tab or a stall can carry seconds of
+                // time; clamp it so the shower never jumps.
+                if (delta < 0) delta = 0;
+                if (delta > 100) delta = 100;
+
+                this.accumulator += delta;
+
+                // Fixed-step simulation, so the fall speed is the same on 60 Hz,
+                // 120 Hz and throttled displays.
+                let steps = 0;
+                while (this.accumulator >= this.timeStep && steps < 6) {
+                    const dt = mobileSpeedMultiplier;
+                    this.updateRain(dt);
+                    this.time += dt;
+                    this.accumulator -= this.timeStep;
+                    steps++;
                 }
-                
-                // Draw rain
-                this.drawRain();
-                
+                if (steps === 6) this.accumulator = 0;
+
+                if (steps > 0) this.drawRain();
+
                 requestAnimationFrame((ts) => this.animate(ts));
             }
         }
@@ -638,7 +795,7 @@
                 // This prevents unnecessary renders if the page is navigated away from
                 if (this.container && document.body.contains(this.container)) {
                     this.render();
-                    requestAnimationFrame((ts) => this.animate(ts));
+                    if (!prefersReducedMotion) requestAnimationFrame((ts) => this.animate(ts));
                 }
             }
         }
