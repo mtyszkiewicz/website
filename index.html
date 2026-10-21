@@ -96,6 +96,19 @@
          *   apparent fall speed, streak thickness, ink density, and splash scale.
          */
         const RAIN_CONFIG = Object.freeze({
+            // --- Weather Lulls (unpredictable pauses in the downpour) ---
+            LULL_INTERVAL_MIN: 20,     // Seconds until the next lull (random range)
+            LULL_INTERVAL_MAX: 25,
+            LULL_BLINK_CHANCE: 0.30,   // 30% blink/glitch sequence; the rest (70%) is a full stop
+            LULL_DRAIN_MAX: 1.0,       // Seconds allowed for the draining drops to land
+            LULL_BLINKS: 16,           // Run/stop pulses per blink sequence
+            LULL_BLINK_TOTAL: 0.5,     // Max duration of a whole blink sequence (seconds)
+            LULL_RAMP_DURATION: 0.3,   // Seconds to slow into / speed out of the blink
+            LULL_RESTART_DELAY: 1.0,   // Seconds of empty sky after the last drop lands
+            LULL_RESTART_SPREAD: 1.0,  // Seconds over which returning drops cross the top edge
+            LULL_INTRO_FIRST_DELAY: 5, // Opening sequence: first stop after 5 s
+            LULL_INTRO_SECOND_DELAY: 10,// ... then the glitch 10 s after rain returns
+
             // --- Population ---
             DESKTOP_COUNT: 130,
             MOBILE_COUNT: 95,
@@ -115,9 +128,8 @@
 
             // --- Fall Kinematics (at scale = 1.0, per 1/60s tick) ---
             FALL_SPEED: 13,
+            FALL_SPEED_MIN_SCALE: 0.28,// Floor on speed scale so horizon drops from y=0 don't stall
             FALL_JITTER: 0.18,         // +/-18% per-drop terminal velocity variance
-            TRAVEL_SCREEN: 780,        // Projected air column height (px) at scale = 1.0
-            TRAVEL_FACTOR_MIN: 0.45,   // Per-drop column height multiplier range [0.45, 1.0]
 
             // --- Motion Blur / Shutter Streak ---
             EXPOSURE: 0.65,            // Streak length = speed * exposure
@@ -188,6 +200,7 @@
 
         const TAU = Math.PI * 2;
         const TICK_MS = 1000 / 60;
+        const TICKS_PER_SECOND = 1000 / TICK_MS;
         const PREROLL_TICKS = 90;
         const MOBILE_BREAKPOINT = 768;
         const MOBILE_UA_REGEX = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
@@ -349,6 +362,30 @@
                     () => []
                 );
 
+                /* Weather-lull state machine:
+                   'rain'     - normal shower, counting down to the next lull
+                   'freeze'   - physics suspended; the scene hangs in place
+                   'rampDown' - 0.3 s ease from full speed into the blink
+                   'rampUp'   - 0.3 s ease from the blink back to full speed
+                   'drain'    - no respawns; drops fall, land, and are removed
+                   'gap'      - empty sky for LULL_RESTART_DELAY, then reseed
+                   `timer` and `elapsed` are expressed in 1/60 s ticks. */
+                this.blinksRemaining = 0;
+                this.blinkSequenceActive = false;
+                // Each blink burns one run phase and one stop phase, so split
+                // the total budget evenly across both.
+                this.blinkPhaseTicks =
+                    (this.config.LULL_BLINK_TOTAL / (this.config.LULL_BLINKS * 2)) * TICKS_PER_SECOND;
+                this.blinkRampTicks = this.config.LULL_RAMP_DURATION * TICKS_PER_SECOND;
+                // Opening script: 0 = pending stop, 1 = pending glitch, 2 = glitch
+                // running, 3 = normal random loop.
+                this.introStep = 0;
+                this.lull = {
+                    mode: 'rain',
+                    timer: this.config.LULL_INTRO_FIRST_DELAY * TICKS_PER_SECOND,
+                    elapsed: 0,
+                };
+
                 // Bound callbacks
                 this.handleResize = () => this.resize();
                 this.handleFrame = (ts) => this.animate(ts);
@@ -397,19 +434,31 @@
                     ` rgba(0, 0, 0, ${c.GROUND_ALPHA_BOTTOM}) 100%)`;
 
                 if (this.drops.length > 0) {
+                    for (let i = 0; i < this.drops.length; i++) {
+                        const drop = this.drops[i];
+                        drop.landY = this.horizon + drop.scale * this.groundSpan;
+                    }
                     this.drawRain();
                 }
             }
 
-            /** Populates the initial raindrop pool according to device tier. */
-            initDrops() {
+            /** Populates the raindrop pool according to device tier. */
+            initDrops(initial = true, entranceSpreadTicks = 0) {
                 const count = this.isMobile
                     ? this.config.MOBILE_COUNT
                     : this.config.DESKTOP_COUNT;
 
+                this.drops.length = 0;
                 for (let i = 0; i < count; i++) {
                     const drop = {};
-                    this.seedDrop(drop, true);
+                    // Stratified entry times keep the returning stream even:
+                    // one drop every spread/count ticks instead of clumps.
+                    this.seedDrop(
+                        drop,
+                        initial,
+                        entranceSpreadTicks,
+                        (i + Math.random()) / count
+                    );
                     this.drops.push(drop);
                 }
             }
@@ -420,6 +469,177 @@
                     this.updateRain(1);
                     this.time += 1;
                 }
+            }
+
+            // -----------------------------------------------------------------
+            // Weather Lulls
+            // -----------------------------------------------------------------
+
+            /** Picks a random delay (in ticks) before the next lull. */
+            randomLullInterval() {
+                const c = this.config;
+                return mix(c.LULL_INTERVAL_MIN, c.LULL_INTERVAL_MAX, Math.random()) * TICKS_PER_SECOND;
+            }
+
+            /** Delay before the next lull, shortened while a blink sequence runs. */
+            currentLullInterval() {
+                if (this.blinksRemaining > 0) {
+                    return this.blinkPhaseTicks;
+                }
+                return this.randomLullInterval();
+            }
+
+            /** Begins a blink sequence with its slow-in / slow-out ramps. */
+            startBlinkSequence() {
+                this.blinkSequenceActive = true;
+                this.blinksRemaining = this.config.LULL_BLINKS;
+                this.lull.mode = 'rampDown';
+                this.lull.elapsed = 0;
+            }
+
+            /**
+             * Chooses the next lull type:
+             * - 30% blink sequence (ramp down, 16 run/stop pulses, ramp up)
+             * - 70% drain-out (rain stops, then restarts after a gap)
+             */
+            beginLull() {
+                const c = this.config;
+
+                // Mid-sequence: emit the next freeze pulse.
+                if (this.blinksRemaining > 0) {
+                    this.blinksRemaining--;
+                    this.lull.mode = 'freeze';
+                    this.lull.timer = this.blinkPhaseTicks;
+                    return;
+                }
+
+                // Scripted opening: first a stop, then a glitch, then the loop.
+                if (this.introStep === 0) {
+                    this.introStep = 1;
+                    this.startDrain();
+                    return;
+                }
+                if (this.introStep === 1) {
+                    this.introStep = 2;
+                    this.startBlinkSequence();
+                    return;
+                }
+
+                const roll = Math.random();
+                if (roll < c.LULL_BLINK_CHANCE) {
+                    this.startBlinkSequence();
+                } else {
+                    this.startDrain();
+                }
+            }
+
+            /** Begins a drain and forces every remaining drop to land within LULL_DRAIN_MAX. */
+            startDrain() {
+                const c = this.config;
+                const maxTicks = c.LULL_DRAIN_MAX * TICKS_PER_SECOND;
+                this.lull.mode = 'drain';
+                this.lull.timer = 0;
+
+                for (let i = 0; i < this.drops.length; i++) {
+                    const drop = this.drops[i];
+                    const distance = drop.landY - drop.y;
+                    if (distance <= 0) continue;
+                    const requiredSpeed = distance / maxTicks;
+                    if (drop.vy < requiredSpeed) {
+                        // Only slow, distant drops are nudged; near drops land naturally.
+                        drop.vy = requiredSpeed;
+                        // Keep the motion-blur streak consistent with the new speed.
+                        drop.length = clamp(
+                            drop.vy * c.EXPOSURE * drop.jitter,
+                            c.LENGTH_MIN,
+                            c.LENGTH_MAX
+                        );
+                    }
+                }
+            }
+
+            /**
+             * Advances the weather-lull state machine.
+             *
+             * @returns {number} Simulation speed factor for this tick (0 = frozen, 1 = base).
+             */
+            updateLull(dt) {
+                const lull = this.lull;
+
+                switch (lull.mode) {
+                    case 'rain':
+                        lull.timer -= dt;
+                        if (lull.timer <= 0) this.beginLull();
+                        return 1;
+
+                    case 'rampDown': {
+                        lull.elapsed += dt;
+                        const progress = clamp(lull.elapsed / this.blinkRampTicks, 0, 1);
+                        if (progress >= 1) {
+                            // Fully slowed: begin the first freeze pulse.
+                            this.beginLull();
+                            return 0;
+                        }
+                        return 1 - progress;
+                    }
+
+                    case 'rampUp': {
+                        lull.elapsed += dt;
+                        const progress = clamp(lull.elapsed / this.blinkRampTicks, 0, 1);
+                        if (progress >= 1) {
+                            this.blinkSequenceActive = false;
+                            if (this.introStep === 2) this.introStep = 3;
+                            lull.mode = 'rain';
+                            lull.timer = this.randomLullInterval();
+                            return 1;
+                        }
+                        return progress;
+                    }
+
+                    case 'freeze':
+                        // Suspend physics and time so the shower hangs still.
+                        lull.timer -= dt;
+                        if (lull.timer <= 0) {
+                            if (this.blinkSequenceActive) {
+                                if (this.blinksRemaining > 0) {
+                                    // Run phase between two pulses.
+                                    lull.mode = 'rain';
+                                    lull.timer = this.blinkPhaseTicks;
+                                } else {
+                                    // Last pulse done: ease back to base speed.
+                                    lull.mode = 'rampUp';
+                                    lull.elapsed = 0;
+                                }
+                            } else {
+                                lull.mode = 'rain';
+                                lull.timer = this.randomLullInterval();
+                            }
+                        }
+                        return 0;
+
+                    case 'drain':
+                        // updateRain() removes drops on impact and flips to 'gap'.
+                        return 1;
+
+                    case 'gap':
+                        lull.timer -= dt;
+                        if (lull.timer <= 0) {
+                            /* Rebuild the shower above the top edge. The entrance
+                               spread keeps all drops from crossing the top line
+                               in one solid wave; the first ones cross immediately. */
+                            this.initDrops(
+                                false,
+                                this.config.LULL_RESTART_SPREAD * TICKS_PER_SECOND
+                            );
+                            lull.mode = 'rain';
+                            lull.timer = this.introStep === 1
+                                ? this.config.LULL_INTRO_SECOND_DELAY * TICKS_PER_SECOND
+                                : this.currentLullInterval();
+                        }
+                        return 1;
+                }
+
+                return 1;
             }
 
             // -----------------------------------------------------------------
@@ -457,29 +677,32 @@
              * Assigns a drop's depth, landing point, appearance, and initial
              * kinematics. Called on initial creation and recycled after impact.
              *
-             * @param {Object}  drop    Target drop state object to mutate in place.
-             * @param {boolean} initial When true, scatters `y` along the full fall column.
+             * @param {Object}  drop                Target drop state object to mutate in place.
+             * @param {boolean} initial             When true, scatters `y` along the full fall column.
+             * @param {number}  entranceSpreadTicks Entry-time spread (ticks) for a fresh shower.
+             * @param {number}  spreadFraction      Position of this drop inside the entry window.
              */
-            seedDrop(drop, initial) {
+            seedDrop(drop, initial, entranceSpreadTicks = 0, spreadFraction = Math.random()) {
                 const c = this.config;
 
-                // Sample depth from a bimodal distribution: dense horizon + foreground accents
-                const depth = Math.random() < c.NEAR_FRACTION
-                    ? mix(0.55, 1, Math.random())
-                    : Math.pow(Math.random(), c.DEPTH_BIAS);
+                // Assign depth once per drop slot so faster foreground recycling
+                // never skews the steady-state depth distribution toward the horizon.
+                if (initial || drop.scale === undefined) {
+                    const depth = Math.random() < c.NEAR_FRACTION
+                        ? mix(0.55, 1, Math.random())
+                        : Math.pow(Math.random(), c.DEPTH_BIAS);
+                    drop.scale = mix(c.SCALE_MIN, c.SCALE_MAX, depth);
+                    drop.norm = this.scaleToNorm(drop.scale);
+                    drop.halfWidth = mix(
+                        c.HALF_WIDTH_MIN,
+                        c.HALF_WIDTH_MAX,
+                        Math.pow(drop.norm, c.WIDTH_EXPONENT)
+                    );
+                    drop.level = this.levelForNorm(drop.norm);
+                }
 
-                drop.scale = mix(c.SCALE_MIN, c.SCALE_MAX, depth);
-                drop.norm = this.scaleToNorm(drop.scale);
                 drop.landY = this.horizon + drop.scale * this.groundSpan;
                 drop.x = Math.random() * (this.width + c.SPAWN_MARGIN * 2) - c.SPAWN_MARGIN;
-
-                // Visual weight & ink level
-                drop.halfWidth = mix(
-                    c.HALF_WIDTH_MIN,
-                    c.HALF_WIDTH_MAX,
-                    Math.pow(drop.norm, c.WIDTH_EXPONENT)
-                );
-                drop.level = this.levelForNorm(drop.norm);
 
                 // Per-drop physical character (fixed for the lifetime of this fall)
                 drop.taper = mix(c.TAPER_MIN, c.TAPER_MAX, Math.random());
@@ -488,27 +711,52 @@
                 drop.wobbleSpeed = mix(c.WOBBLE_SPEED_MIN, c.WOBBLE_SPEED_MAX, Math.random());
                 drop.jitter = 1 + (Math.random() - 0.5) * 2 * c.LENGTH_JITTER;
 
-                // Kinematics scaled by perspective depth
-                drop.speed = c.FALL_SPEED * drop.scale * (1 + (Math.random() - 0.5) * 2 * c.FALL_JITTER);
+                // Kinematics scaled by perspective depth; streak length reflects true
+                // depth scale while fall velocity keeps a floor so top-of-screen
+                // horizon drops traverse the sky in reasonable time.
+                const velocityJitter = 1 + (Math.random() - 0.5) * 2 * c.FALL_JITTER;
+                const streakSpeed = c.FALL_SPEED * drop.scale * velocityJitter;
+                const speedScale = Math.max(drop.scale, c.FALL_SPEED_MIN_SCALE);
+                drop.speed = c.FALL_SPEED * speedScale * velocityJitter;
                 drop.vy = drop.speed;
                 drop.vx = 0;
                 drop.dirX = 0;
                 drop.dirY = 1;
-                drop.length = clamp(drop.speed * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
+                drop.length = clamp(streakSpeed * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
 
-                const travel = c.TRAVEL_SCREEN * drop.scale * mix(c.TRAVEL_FACTOR_MIN, 1, Math.random());
-                drop.y = initial
-                    ? drop.landY - travel * Math.random()
-                    : drop.landY - travel;
+                // Start above the top edge. The initial pass is scattered along
+                // each column; a restart offsets each drop by a random fraction
+                // of its own speed so entries are staggered instead of forming
+                // one solid layer, while some cross the line on the first frame.
+                const spawnTopY = -drop.halfWidth - Math.random() * c.SPAWN_MARGIN;
+                if (initial) {
+                    drop.y = mix(spawnTopY, drop.landY, Math.random());
+                } else {
+                    const spread = entranceSpreadTicks > 0
+                        ? spreadFraction * drop.speed * entranceSpreadTicks
+                        : 0;
+                    drop.y = -drop.halfWidth - spread;
+                }
             }
 
             /** Advances all active raindrops and splashes by `dt` (in 1/60s ticks). */
             updateRain(dt) {
                 const c = this.config;
-                const windLerp = clamp(c.WIND_RESPONSE * dt, 0, 1);
+                const isDraining = this.lull.mode === 'drain';
 
                 for (let i = 0; i < this.drops.length; i++) {
                     const drop = this.drops[i];
+
+                    // During a drain-out, discard any drop still above the
+                    // viewport so no new drops enter from the top edge.
+                    if (isDraining && drop.y + drop.halfWidth <= 0) {
+                        const last = this.drops.pop();
+                        if (i < this.drops.length) this.drops[i] = last;
+                        i--;
+                        continue;
+                    }
+
+                    const windLerp = clamp(c.WIND_RESPONSE * dt, 0, 1);
 
                     // Horizontal velocity relaxes toward the local wind + turbulence
                     const targetVx = (
@@ -523,7 +771,6 @@
                     drop.y += drop.vy * dt;
 
                     // Align streak vector with instantaneous velocity
-                    drop.length = clamp(drop.speed * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
                     const invSpeed = 1 / Math.hypot(drop.vx, drop.vy);
                     drop.dirX = drop.vx * invSpeed;
                     drop.dirY = drop.vy * invSpeed;
@@ -531,7 +778,17 @@
                     // Ground plane impact check
                     if (drop.y >= drop.landY) {
                         this.spawnSplash(drop);
-                        this.seedDrop(drop, false);
+
+                        if (isDraining) {
+                            /* During a drain-out no fresh drop replaces this one:
+                               remove it in place and keep the loop on the same
+                               index, so the array shrinks as the sky empties. */
+                            const last = this.drops.pop();
+                            if (i < this.drops.length) this.drops[i] = last;
+                            i--;
+                        } else {
+                            this.seedDrop(drop, false);
+                        }
                         continue;
                     }
 
@@ -546,6 +803,18 @@
                 }
 
                 this.updateSplashes(dt);
+
+                // Every draining drop has landed: hold an empty sky for 1 s.
+                if (isDraining && this.drops.length === 0) this.startGap();
+            }
+
+            /** Clears the field and starts the empty-sky pause. */
+            startGap() {
+                this.drops.length = 0;
+                // The downpour is over: no lingering impact rings during the pause.
+                this.splashes.length = 0;
+                this.lull.mode = 'gap';
+                this.lull.timer = this.config.LULL_RESTART_DELAY * TICKS_PER_SECOND;
             }
 
             /**
@@ -797,6 +1066,7 @@
                 // Partition drops into depth-of-field ink buckets
                 for (let i = 0; i < this.drops.length; i++) {
                     const drop = this.drops[i];
+                    if (drop.y + drop.halfWidth <= 0) continue;
                     this.streakBuckets[drop.level].push(drop);
                     this.headBuckets[Math.min(levels - 1, drop.level + 1)].push(drop);
                     if (drop.halfWidth >= c.HIGHLIGHT_MIN_HALF_WIDTH) {
@@ -872,8 +1142,13 @@
                 const dt = clamp(delta / TICK_MS, 0, 3) * this.speedMultiplier;
 
                 if (dt > 0) {
-                    this.updateRain(dt);
-                    this.time += dt;
+                    // `speed` is 0 while frozen and eases through the blink ramps.
+                    const speed = this.updateLull(dt);
+                    if (speed > 0) {
+                        const scaledDt = dt * speed;
+                        this.updateRain(scaledDt);
+                        this.time += scaledDt;
+                    }
                 }
 
                 this.drawRain();
