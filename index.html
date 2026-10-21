@@ -111,7 +111,7 @@
 
             // --- Population ---
             DESKTOP_COUNT: 130,
-            MOBILE_COUNT: 95,
+            MOBILE_COUNT: 40,
             SPAWN_MARGIN: 60,          // Horizontal off-screen buffer (px) for wind wrap
 
             // --- Ground Plane & Horizon ---
@@ -132,20 +132,15 @@
             FALL_JITTER: 0.18,         // +/-18% per-drop terminal velocity variance
 
             // --- Motion Blur / Shutter Streak ---
-            EXPOSURE: 0.65,            // Streak length = speed * exposure
+            EXPOSURE: 0.72,            // Streak length = speed * exposure
             LENGTH_JITTER: 0.20,       // +/-20% per-drop streak length variation
-            LENGTH_MIN: 2,
+            LENGTH_MIN: 3,
             LENGTH_MAX: 34,
 
-            // --- Drop & Streak Silhouette ---
-            TAPER_MIN: 0.12,           // Tail-to-head half-width ratio (minimum)
-            TAPER_MAX: 0.45,           // Tail-to-head half-width ratio (maximum)
-            HEAD_WIDTH: 1.40,          // Ratio of drop radius to streak head half-width
-            HALF_WIDTH_MIN: 0.26,      // Minimum visible drop radius (px)
-            HALF_WIDTH_MAX: 2.00,      // Maximum foreground drop radius (px)
+            // --- Rectangular Bar Silhouette ---
+            HALF_WIDTH_MIN: 0.30,      // Minimum visible bar half-width (px)
+            HALF_WIDTH_MAX: 1.15,      // Maximum foreground bar half-width (px)
             WIDTH_EXPONENT: 1.25,      // Non-linear thickness curve across depth
-            SEGMENTS: 5,               // Tessellation subdivisions along each streak side
-            CAP_SEGMENTS: 8,           // Tessellation subdivisions around the rounded head
 
             // --- Wind Field & Turbulence ---
             WIND_BASE: 0.35,           // Prevailing horizontal drift
@@ -160,8 +155,8 @@
 
             // --- Ink Posterisation & Palette ---
             INK_LEVELS: 6,             // Discrete depth-of-field ink buckets for batching
-            FAR_ALPHA: 0.20,           // Ink opacity at level 0 (horizon)
-            NEAR_ALPHA: 0.72,          // Ink opacity at highest level (foreground)
+            FAR_ALPHA: 0.24,           // Ink opacity at level 0 (horizon)
+            NEAR_ALPHA: 0.78,          // Ink opacity at highest level (foreground)
             COLOR_R: 0,
             COLOR_G: 0,
             COLOR_B: 0,
@@ -186,12 +181,34 @@
             HIGHLIGHT_R: 128,
             HIGHLIGHT_G: 128,
             HIGHLIGHT_B: 128,
-            HIGHLIGHT_ALPHA: 0.40,
-            HIGHLIGHT_WIDTH: 0.55,          // Stroke width as a fraction of drop half-width
-            HIGHLIGHT_OFFSET: 0.42,         // Lateral offset toward the lit (left) edge
-            HIGHLIGHT_START: 0.50,          // Start position along streak (0 = tail, 1 = head)
-            HIGHLIGHT_END: 0.97,            // End position along streak
-            HIGHLIGHT_MIN_HALF_WIDTH: 0.90, // Minimum drop radius required to render highlight
+            HIGHLIGHT_ALPHA: 0.38,
+            HIGHLIGHT_WIDTH: 0.45,          // Stroke width as a fraction of bar half-width
+            HIGHLIGHT_OFFSET: 0.38,         // Lateral offset toward the lit (left) edge
+            HIGHLIGHT_START: 0.18,          // Start position along bar (0 = tail, 1 = head)
+            HIGHLIGHT_END: 0.92,            // End position along bar
+            HIGHLIGHT_MIN_HALF_WIDTH: 0.65, // Minimum bar half-width required to render highlight
+        });
+
+        /**
+         * Mobile-specific overrides applied on narrow/handheld viewports so
+         * rectangular rain bars and ground splashes are proportionally scaled.
+         */
+        const MOBILE_RAIN_OVERRIDES = Object.freeze({
+            SPAWN_MARGIN: 36,
+            NEAR_FRACTION: 0.06,
+            EXPOSURE: 0.85,
+            LENGTH_MIN: 4,
+            LENGTH_MAX: 28,
+            HALF_WIDTH_MIN: 0.24,
+            HALF_WIDTH_MAX: 0.85,
+            SPLASH_RADIUS: 9.5,
+            SPLASH_RADIUS_MIN: 2.2,
+            SPLASH_WIDTH: 0.85,
+            SPLASH_BEAD_SPEED: 2.1,
+            HIGHLIGHT_ALPHA: 0.28,
+            HIGHLIGHT_WIDTH: 0.40,
+            HIGHLIGHT_OFFSET: 0.34,
+            HIGHLIGHT_MIN_HALF_WIDTH: 0.50,
         });
 
         // =====================================================================
@@ -223,36 +240,8 @@
         }
 
         // =====================================================================
-        // PRECOMPUTED GEOMETRY & STYLE LOOKUP TABLES
+        // PRECOMPUTED STYLE LOOKUP TABLES
         // =====================================================================
-
-        /**
-         * Precomputes invariant geometry tables for streak outlines and rounded
-         * drop caps, avoiding thousands of `Math.pow`, `Math.sin`, and `Math.cos`
-         * evaluations per frame.
-         */
-        function buildGeometryTables(config) {
-            const segments = config.SEGMENTS;
-            const capSegments = config.CAP_SEGMENTS;
-
-            const streakT = new Float64Array(segments + 1);
-            const streakCurve = new Float64Array(segments + 1);
-            for (let i = 0; i <= segments; i++) {
-                const t = i / segments;
-                streakT[i] = t;
-                streakCurve[i] = Math.pow(t, 0.7);
-            }
-
-            const capCos = new Float64Array(capSegments);
-            const capSin = new Float64Array(capSegments);
-            for (let i = 1; i < capSegments; i++) {
-                const phi = Math.PI * (i / capSegments);
-                capCos[i] = Math.cos(phi);
-                capSin[i] = Math.sin(phi);
-            }
-
-            return { streakT, streakCurve, capCos, capSin };
-        }
 
         /**
          * Precomputes per-level and per-splash-bucket rendering descriptors
@@ -322,8 +311,8 @@
         // =====================================================================
 
         class RainSystem {
-            constructor(config = RAIN_CONFIG) {
-                this.config = config;
+            constructor(baseConfig = RAIN_CONFIG) {
+                this.baseConfig = baseConfig;
                 this.canvas = document.querySelector('#canvas');
                 this.ctx = this.canvas.getContext('2d');
                 this.groundPlane = document.querySelector('#ground-plane');
@@ -332,7 +321,10 @@
                 this.isMobile =
                     MOBILE_UA_REGEX.test(navigator.userAgent) ||
                     window.innerWidth < MOBILE_BREAKPOINT;
-                this.speedMultiplier = this.isMobile ? 1.4 : 1.0;
+                this.config = this.isMobile
+                    ? Object.freeze({ ...baseConfig, ...MOBILE_RAIN_OVERRIDES })
+                    : baseConfig;
+                this.speedMultiplier = 1.0;
                 this.prefersReducedMotion = window.matchMedia(
                     '(prefers-reduced-motion: reduce)'
                 ).matches;
@@ -348,14 +340,12 @@
                 this.groundSpan = 1;
 
                 // Precomputed lookup tables
-                this.geometry = buildGeometryTables(config);
-                this.styles = buildRenderTables(config);
+                this.styles = buildRenderTables(this.config);
 
                 // Reusable render batch buckets (indexed by ink level / splash stage)
-                this.levels = config.INK_LEVELS;
-                this.splashStages = config.SPLASH_STAGES;
+                this.levels = this.config.INK_LEVELS;
+                this.splashStages = this.config.SPLASH_STAGES;
                 this.streakBuckets = Array.from({ length: this.levels }, () => []);
-                this.headBuckets = Array.from({ length: this.levels }, () => []);
                 this.highlightBuckets = Array.from({ length: this.levels }, () => []);
                 this.splashBuckets = Array.from(
                     { length: this.levels * this.splashStages },
@@ -412,6 +402,18 @@
              * and perspective projection metrics with the current window size.
              */
             resize() {
+                const nextIsMobile =
+                    MOBILE_UA_REGEX.test(navigator.userAgent) ||
+                    window.innerWidth < MOBILE_BREAKPOINT;
+                const tierChanged = nextIsMobile !== this.isMobile;
+                if (tierChanged) {
+                    this.isMobile = nextIsMobile;
+                    this.config = this.isMobile
+                        ? Object.freeze({ ...this.baseConfig, ...MOBILE_RAIN_OVERRIDES })
+                        : this.baseConfig;
+                    this.styles = buildRenderTables(this.config);
+                }
+
                 const c = this.config;
                 const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -434,9 +436,14 @@
                     ` rgba(0, 0, 0, ${c.GROUND_ALPHA_BOTTOM}) 100%)`;
 
                 if (this.drops.length > 0) {
-                    for (let i = 0; i < this.drops.length; i++) {
-                        const drop = this.drops[i];
-                        drop.landY = this.horizon + drop.scale * this.groundSpan;
+                    if (tierChanged && this.lull.mode !== 'gap' && this.lull.mode !== 'drain') {
+                        this.splashes.length = 0;
+                        this.initDrops(true);
+                    } else {
+                        for (let i = 0; i < this.drops.length; i++) {
+                            const drop = this.drops[i];
+                            drop.landY = this.horizon + drop.scale * this.groundSpan;
+                        }
                     }
                     this.drawRain();
                 }
@@ -705,7 +712,6 @@
                 drop.x = Math.random() * (this.width + c.SPAWN_MARGIN * 2) - c.SPAWN_MARGIN;
 
                 // Per-drop physical character (fixed for the lifetime of this fall)
-                drop.taper = mix(c.TAPER_MIN, c.TAPER_MAX, Math.random());
                 drop.slant = (Math.random() - 0.5) * c.SLANT_JITTER;
                 drop.wobble = Math.random() * TAU;
                 drop.wobbleSpeed = mix(c.WOBBLE_SPEED_MIN, c.WOBBLE_SPEED_MAX, Math.random());
@@ -896,54 +902,22 @@
             // -----------------------------------------------------------------
 
             /**
-             * Appends a single drop's tapered motion-blur silhouette to the
-             * current canvas path using precomputed curve and cap tables.
+             * Appends a single drop's uniform-width rectangular bar along its
+             * instantaneous fall vector to the current canvas path.
              */
             traceStreak(ctx, drop) {
-                const c = this.config;
-                const { streakT, streakCurve, capCos, capSin } = this.geometry;
-
                 const len = drop.length;
                 const dirX = drop.dirX;
                 const dirY = drop.dirY;
-                const perpX = -dirY;
-                const perpY = dirX;
+                const wx = -dirY * drop.halfWidth;
+                const wy = dirX * drop.halfWidth;
                 const tailX = drop.x - dirX * len;
                 const tailY = drop.y - dirY * len;
-                const wHead = drop.halfWidth / c.HEAD_WIDTH;
-                const wTail = wHead * drop.taper;
-                const wSpan = wHead - wTail;
 
-                // Left edge: tail -> head
-                for (let i = 0; i <= c.SEGMENTS; i++) {
-                    const t = streakT[i];
-                    const w = wTail + wSpan * streakCurve[i];
-                    const x = tailX + dirX * len * t + perpX * w;
-                    const y = tailY + dirY * len * t + perpY * w;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-
-                // Rounded leading cap
-                for (let i = 1; i < c.CAP_SEGMENTS; i++) {
-                    const cos = capCos[i];
-                    const sin = capSin[i];
-                    ctx.lineTo(
-                        drop.x + (perpX * cos + dirX * sin) * wHead,
-                        drop.y + (perpY * cos + dirY * sin) * wHead
-                    );
-                }
-
-                // Right edge: head -> tail
-                for (let i = c.SEGMENTS; i >= 0; i--) {
-                    const t = streakT[i];
-                    const w = wTail + wSpan * streakCurve[i];
-                    ctx.lineTo(
-                        tailX + dirX * len * t - perpX * w,
-                        tailY + dirY * len * t - perpY * w
-                    );
-                }
-
+                ctx.moveTo(tailX + wx, tailY + wy);
+                ctx.lineTo(drop.x + wx, drop.y + wy);
+                ctx.lineTo(drop.x - wx, drop.y - wy);
+                ctx.lineTo(tailX - wx, tailY - wy);
                 ctx.closePath();
             }
 
@@ -1059,7 +1033,6 @@
                 // Clear per-level batch queues
                 for (let l = 0; l < levels; l++) {
                     this.streakBuckets[l].length = 0;
-                    this.headBuckets[l].length = 0;
                     this.highlightBuckets[l].length = 0;
                 }
 
@@ -1068,7 +1041,6 @@
                     const drop = this.drops[i];
                     if (drop.y + drop.halfWidth <= 0) continue;
                     this.streakBuckets[drop.level].push(drop);
-                    this.headBuckets[Math.min(levels - 1, drop.level + 1)].push(drop);
                     if (drop.halfWidth >= c.HIGHLIGHT_MIN_HALF_WIDTH) {
                         this.highlightBuckets[drop.level].push(drop);
                     }
@@ -1079,7 +1051,7 @@
                 // Pass 1: Ground splashes (underneath falling drops)
                 this.drawSplashes();
 
-                // Pass 2: Tapered motion-blur trails
+                // Pass 2: Uniform rectangular rain bars
                 for (let l = 0; l < levels; l++) {
                     const list = this.streakBuckets[l];
                     if (list.length === 0) continue;
@@ -1091,23 +1063,8 @@
                     ctx.fill();
                 }
 
-                // Pass 3: Darker leading drop beads
-                for (let l = 0; l < levels; l++) {
-                    const list = this.headBuckets[l];
-                    if (list.length === 0) continue;
-                    ctx.fillStyle = levelInkStyle[l];
-                    ctx.beginPath();
-                    for (let i = 0; i < list.length; i++) {
-                        const drop = list[i];
-                        const r = drop.halfWidth;
-                        ctx.moveTo(drop.x + r, drop.y);
-                        ctx.arc(drop.x, drop.y, r, 0, TAU);
-                    }
-                    ctx.fill();
-                }
-
-                // Pass 4: Specular highlights on foreground streaks
-                ctx.lineCap = 'round';
+                // Pass 3: Flat-ended specular highlights on foreground bars
+                ctx.lineCap = 'butt';
                 for (let l = 0; l < levels; l++) {
                     const list = this.highlightBuckets[l];
                     if (list.length === 0) continue;
