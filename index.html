@@ -5,37 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mtyszkiewicz.dev</title>
     <style>
-        * {
+        /* =====================================================================
+           RESET & BASE LAYOUT
+           ===================================================================== */
+        *,
+        *::before,
+        *::after {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        body, html {
+
+        html,
+        body {
             height: 100%;
             overflow: hidden;
             background: #fefefe;
             font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
         }
-        #canvas {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 1;
-        }
-        /* The ground plane is static scenery, so it lives in CSS and costs the
-           canvas nothing: the rain only has to clear and paint marks over it. */
+
+        /* =====================================================================
+           SCENE LAYERS (bottom -> top: ground-plane, canvas, noise-overlay)
+           ===================================================================== */
+
+        /* Static horizon and ground wash rendered by the CSS compositor so the
+           2D canvas only needs to clear and draw dynamic ink marks each frame. */
         #ground-plane {
             position: fixed;
             inset: 0;
             z-index: 0;
             pointer-events: none;
         }
+
+        /* Primary simulation viewport. */
+        #canvas {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Subtle animated film grain overlay. */
         #noise-overlay {
             position: fixed;
-            top: 0;
-            left: 0;
+            inset: 0;
             width: 100%;
             height: 100%;
             z-index: 2;
@@ -44,17 +58,18 @@
             background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><defs><filter id="noise"><feflood flood-color="white"/><fecomponenttransfer><fefunca type="discrete" tablevalues="0 .5 0 1 0 .8 0 .2 0 .9"/></fecomponenttransfer><fecomposite operator="over" in2="SourceGraphic"/></filter></defs><rect width="100%" height="100%" filter="url(%23noise)"/></svg>') repeat;
             animation: noise 0.2s infinite linear;
         }
+
         @keyframes noise {
             0%, 100% { transform: translate(0, 0); }
-            10% { transform: translate(-1px, -1px); }
-            20% { transform: translate(1px, 1px); }
-            30% { transform: translate(-1px, 1px); }
-            40% { transform: translate(1px, -1px); }
-            50% { transform: translate(-1px, -1px); }
-            60% { transform: translate(1px, 1px); }
-            70% { transform: translate(-1px, 1px); }
-            80% { transform: translate(1px, -1px); }
-            90% { transform: translate(-1px, -1px); }
+            10%      { transform: translate(-1px, -1px); }
+            20%      { transform: translate(1px, 1px); }
+            30%      { transform: translate(-1px, 1px); }
+            40%      { transform: translate(1px, -1px); }
+            50%      { transform: translate(-1px, -1px); }
+            60%      { transform: translate(1px, 1px); }
+            70%      { transform: translate(-1px, 1px); }
+            80%      { transform: translate(1px, -1px); }
+            90%      { transform: translate(-1px, -1px); }
         }
     </style>
 </head>
@@ -62,320 +77,403 @@
     <div id="ground-plane"></div>
     <canvas id="canvas"></canvas>
     <div id="noise-overlay"></div>
-    
+
     <script>
-        // ===== CONFIGURABLE PARAMETERS =====
-        // ===== CONFIGURABLE PARAMETERS =====
-        const RAIN_CONFIG = {
-            // Population
+        'use strict';
+
+        // =====================================================================
+        // SIMULATION CONFIGURATION
+        // =====================================================================
+
+        /**
+         * Immutable tuning parameters for the perspective rain simulation.
+         *
+         * Coordinate model:
+         * - The viewer stands on a flat ground plane looking slightly downward.
+         * - `HORIZON_RATIO` defines the vertical position of the horizon line.
+         * - Every drop is assigned a screen-space depth `scale` in [SCALE_MIN, SCALE_MAX],
+         *   which determines its landing Y coordinate on the ground plane, its
+         *   apparent fall speed, streak thickness, ink density, and splash scale.
+         */
+        const RAIN_CONFIG = Object.freeze({
+            // --- Population ---
             DESKTOP_COUNT: 130,
             MOBILE_COUNT: 95,
+            SPAWN_MARGIN: 60,          // Horizontal off-screen buffer (px) for wind wrap
 
-            /* You are standing on a flat plane, looking a little down at it, so
-               the horizon is a fixed fraction of the viewport and everything
-               below it is ground. Rain falls onto that ground, not down the
-               screen: every drop has a landing point on the plane. */
-            HORIZON_RATIO: 0.62,
-            HORIZON_HAZE: 0.30,        // wash fades in this far above the horizon
-            GROUND_ALPHA_TOP: 0.040,   // the plane, just past the horizon
-            GROUND_ALPHA_BOTTOM: 0.030, // ... and under your feet
+            // --- Ground Plane & Horizon ---
+            HORIZON_RATIO: 0.62,       // Horizon line as a fraction of viewport height
+            HORIZON_HAZE: 0.30,        // Atmospheric fade-in span above the horizon
+            GROUND_ALPHA_TOP: 0.040,   // Ground wash opacity right at the horizon
+            GROUND_ALPHA_BOTTOM: 0.030,// Ground wash opacity at the bottom edge
 
-            /* Depth is faked entirely in screen space. A drop's `scale` is how
-               many times bigger it looks than a reference drop at the bottom of
-               the frame, and its landing point follows straight from it:
-               landY = horizon + scale * (height - horizon). A drop that lands
-               low on the screen is close and big; one that lands on the horizon
-               is far away and a speck. */
-            SCALE_MIN: 0.06,
-            SCALE_MAX: 1.80,
-            /* Drop density has to grow with distance: a screen patch of raindrops
-               at 30 m holds far more drops than one at 1 m, because the volume
-               behind it is that much deeper. Depth is therefore sampled with a
-               strong bias toward the horizon, plus a small population right at
-               the lens to keep a foreground. */
-            DEPTH_BIAS: 1.60,          // > 1 packs the distance, where rain is densest
-            NEAR_FRACTION: 0.10,       // ... while a few drops live at the lens
+            // --- Screen-Space Depth Distribution ---
+            SCALE_MIN: 0.06,           // Furthest drops right on the horizon
+            SCALE_MAX: 1.80,           // Closest drops right in front of the lens
+            DEPTH_BIAS: 1.60,          // > 1 biases population toward the horizon
+            NEAR_FRACTION: 0.10,       // Fraction of drops reserved for close foreground
 
-            /* Screen fall speed at scale 1. Everything is multiplied by depth,
-               so far drops crawl and near ones whip past. That ratio is the
-               whole read: it is why the picture has a floor and a distance. */
+            // --- Fall Kinematics (at scale = 1.0, per 1/60s tick) ---
             FALL_SPEED: 13,
-            FALL_JITTER: 0.18,
+            FALL_JITTER: 0.18,         // +/-18% per-drop terminal velocity variance
+            TRAVEL_SCREEN: 780,        // Projected air column height (px) at scale = 1.0
+            TRAVEL_FACTOR_MIN: 0.45,   // Per-drop column height multiplier range [0.45, 1.0]
 
-            /* Streak length = speed x exposure. A camera records the trail a
-               drop covers while the shutter is open, so fast (near) drops read
-               as long streaks and slow (far) ones as dashes or dots. */
-            EXPOSURE: 0.65,
-            LENGTH_JITTER: 0.20,       // +-20 % individual variation
+            // --- Motion Blur / Shutter Streak ---
+            EXPOSURE: 0.65,            // Streak length = speed * exposure
+            LENGTH_JITTER: 0.20,       // +/-20% per-drop streak length variation
             LENGTH_MIN: 2,
             LENGTH_MAX: 34,
 
-            /* Streak silhouette: an engraved taper, wide at the drop and drawn
-               out to a point at the tail. The drop itself is wider than the
-               trail it leaves. */
-            TAPER_MIN: 0.12,           // tail half-width / head half-width
-            TAPER_MAX: 0.45,
-            HEAD_WIDTH: 1.40,          // head radius / trail half-width
-            HALF_WIDTH_MIN: 0.26,      // keeps the thinnest drops visible
-            HALF_WIDTH_MAX: 2.00,
-            WIDTH_EXPONENT: 1.25,
-            SEGMENTS: 5,               // samples down each side
-            CAP_SEGMENTS: 8,           // samples around the rounded head
+            // --- Drop & Streak Silhouette ---
+            TAPER_MIN: 0.12,           // Tail-to-head half-width ratio (minimum)
+            TAPER_MAX: 0.45,           // Tail-to-head half-width ratio (maximum)
+            HEAD_WIDTH: 1.40,          // Ratio of drop radius to streak head half-width
+            HALF_WIDTH_MIN: 0.26,      // Minimum visible drop radius (px)
+            HALF_WIDTH_MAX: 2.00,      // Maximum foreground drop radius (px)
+            WIDTH_EXPONENT: 1.25,      // Non-linear thickness curve across depth
+            SEGMENTS: 5,               // Tessellation subdivisions along each streak side
+            CAP_SEGMENTS: 8,           // Tessellation subdivisions around the rounded head
 
-            /* Wind. Every drop reads the same field, so the whole screen leans
-               together like one weather system; gust fronts travel sideways so
-               neighbours stay nearly parallel. A near drop crosses the frame
-               faster, so its sideways kick is scaled by depth as well. */
-            WIND_BASE: 0.35,
-            WIND_GUST: 1.00,
-            WIND_FREQUENCY: 0.006,     // rad per tick -> ~17 s gust cycle
-            WIND_TRAVEL: 0.0025,       // rad per px -> fronts cross the page
-            WIND_RESPONSE: 0.10,       // how fast a drop picks up a gust
-            SLANT_JITTER: 0.10,        // small per-drop individuality
-
-            // Always-on turbulence
-            WOBBLE_STRENGTH: 0.10,
-            WOBBLE_SPEED_MIN: 0.02,
+            // --- Wind Field & Turbulence ---
+            WIND_BASE: 0.35,           // Prevailing horizontal drift
+            WIND_GUST: 1.00,           // Peak gust amplitude
+            WIND_FREQUENCY: 0.006,     // Temporal frequency (rad/tick, ~17s cycle)
+            WIND_TRAVEL: 0.0025,       // Spatial wave number (rad/px across viewport)
+            WIND_RESPONSE: 0.10,       // Horizontal velocity smoothing factor per tick
+            SLANT_JITTER: 0.10,        // Per-drop angle variance
+            WOBBLE_STRENGTH: 0.10,     // High-frequency oscillation amplitude
+            WOBBLE_SPEED_MIN: 0.02,    // Oscillation speed range (rad/tick)
             WOBBLE_SPEED_MAX: 0.05,
 
-            /* How far a drop travels through the air, in screen pixels at
-               scale 1. This is the world's column height projected: every drop
-               starts at the top of a column of this height and falls to the
-               ground, so its visible path shrinks with distance exactly the way
-               a perspective camera shrinks it. Because speed also scales with
-               distance, the time in flight comes out the same everywhere -- so
-               each drop gets its own column height, otherwise the whole wall
-               would land in lockstep. */
-            TRAVEL_SCREEN: 780,
-            TRAVEL_FACTOR_MIN: 0.45,   // this drop's column is 45-100 % of that
-
-            /* Depth of field, posterised into flat ink densities. Fewer levels
-               gives a flatter, more printed look and fewer fill calls. */
-            INK_LEVELS: 6,
-            FAR_ALPHA: 0.20,           // distant rain is faint
-            NEAR_ALPHA: 0.72,
-
-            /* The splash: a ring that spreads and flattens into the plane, plus
-               a few crown droplets thrown up by the impact. Far splashes are
-               seen at a grazing angle, so they collapse into flat dashes; ones
-               at your feet open up into almost-round ellipses. */
-            SPLASH_STAGES: 4,          // quantised fade, so rings still batch
-            SPLASH_LIFE_MIN: 18,
-            SPLASH_LIFE_MAX: 30,
-            SPLASH_RADIUS: 16,         // ring radius at scale 1
-            SPLASH_RADIUS_MIN: 3.6,    // far rings still need a visible mark
-            SPLASH_FLAT_FAR: 0.34,     // graze on the horizon
-            SPLASH_FLAT_NEAR: 0.48,    // look down on it, near your feet
-            SPLASH_ALPHA: 0.55,        // multiplier on the drop's ink density
-            SPLASH_WIDTH: 1.30,        // ring stroke width at scale 1
-            SPLASH_BEADS_MIN: 1,
-            SPLASH_BEADS_MAX: 3,
-            SPLASH_BEAD_SPEED: 3.0,    // upward launch speed at scale 1
-            SPLASH_BEAD_GRAVITY: 0.26,
-            MAX_SPLASHES: 400,
-
-            /* Specular highlight. The light is treated as coming from the left,
-               so the highlight on every drop sits off-centre on its left side,
-               the way it does on a real water column. */
-            HIGHLIGHT_R: 128,
-            HIGHLIGHT_G: 128,
-            HIGHLIGHT_B: 128,
-            HIGHLIGHT_ALPHA: 0.40,
-            HIGHLIGHT_WIDTH: 0.55,     // fraction of the drop's half-width
-            HIGHLIGHT_OFFSET: 0.42,    // fraction of the local half-width
-            HIGHLIGHT_START: 0.50,     // along the streak: 0 tail, 1 head
-            HIGHLIGHT_END: 0.97,
-            HIGHLIGHT_MIN_HALF_WIDTH: 0.90,  // only drops wide enough to show it
-
-            // Ink colour
+            // --- Ink Posterisation & Palette ---
+            INK_LEVELS: 6,             // Discrete depth-of-field ink buckets for batching
+            FAR_ALPHA: 0.20,           // Ink opacity at level 0 (horizon)
+            NEAR_ALPHA: 0.72,          // Ink opacity at highest level (foreground)
             COLOR_R: 0,
             COLOR_G: 0,
             COLOR_B: 0,
 
-            // Recycling
-            SPAWN_MARGIN: 60,
-        };
+            // --- Ground Impact Splashes ---
+            SPLASH_STAGES: 4,          // Quantised fade stages per ink level for batching
+            SPLASH_LIFE_MIN: 18,       // Splash duration range (ticks)
+            SPLASH_LIFE_MAX: 30,
+            SPLASH_RADIUS: 16,         // Base ring radius (px) at scale = 1.0
+            SPLASH_RADIUS_MIN: 3.6,    // Minimum ring radius so distant impacts remain legible
+            SPLASH_FLAT_FAR: 0.34,     // Ellipse aspect ratio (ry/rx) near horizon
+            SPLASH_FLAT_NEAR: 0.48,    // Ellipse aspect ratio (ry/rx) near bottom of frame
+            SPLASH_ALPHA: 0.55,        // Opacity multiplier relative to level ink
+            SPLASH_WIDTH: 1.30,        // Ring stroke width at scale = 1.0
+            SPLASH_BEADS_MIN: 1,       // Crown droplet count range per impact
+            SPLASH_BEADS_MAX: 3,
+            SPLASH_BEAD_SPEED: 3.0,    // Crown droplet upward launch speed at scale = 1.0
+            SPLASH_BEAD_GRAVITY: 0.26, // Crown droplet gravity per tick at scale = 1.0
+            MAX_SPLASHES: 400,         // Hard cap on concurrent active splashes
 
-        // Detect mobile for optimizations
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
+            // --- Specular Highlight ---
+            HIGHLIGHT_R: 128,
+            HIGHLIGHT_G: 128,
+            HIGHLIGHT_B: 128,
+            HIGHLIGHT_ALPHA: 0.40,
+            HIGHLIGHT_WIDTH: 0.55,          // Stroke width as a fraction of drop half-width
+            HIGHLIGHT_OFFSET: 0.42,         // Lateral offset toward the lit (left) edge
+            HIGHLIGHT_START: 0.50,          // Start position along streak (0 = tail, 1 = head)
+            HIGHLIGHT_END: 0.97,            // End position along streak
+            HIGHLIGHT_MIN_HALF_WIDTH: 0.90, // Minimum drop radius required to render highlight
+        });
 
-
-        // Speed multiplier for mobile devices
-        const mobileSpeedMultiplier = isMobile ? 1.4 : 1.0;
-
-        // Respect the OS "reduce motion" setting: draw the scene, then freeze it
-        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        // =====================================================================
+        // CONSTANTS & MATH UTILITIES
+        // =====================================================================
 
         const TAU = Math.PI * 2;
+        const TICK_MS = 1000 / 60;
+        const PREROLL_TICKS = 90;
+        const MOBILE_BREAKPOINT = 768;
+        const MOBILE_UA_REGEX = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
 
+        /** Clamps `value` to the inclusive range `[min, max]`. */
         function clamp(value, min, max) {
-            return value < min ? min : (value > max ? max : value);
+            if (value < min) return min;
+            if (value > max) return max;
+            return value;
         }
 
+        /** Linearly interpolates between `a` and `b` by factor `t`. */
         function mix(a, b, t) {
             return a + (b - a) * t;
         }
 
+        /** Formats an RGBA CSS color string. */
+        function rgba(r, g, b, alpha) {
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
+        // =====================================================================
+        // PRECOMPUTED GEOMETRY & STYLE LOOKUP TABLES
+        // =====================================================================
+
+        /**
+         * Precomputes invariant geometry tables for streak outlines and rounded
+         * drop caps, avoiding thousands of `Math.pow`, `Math.sin`, and `Math.cos`
+         * evaluations per frame.
+         */
+        function buildGeometryTables(config) {
+            const segments = config.SEGMENTS;
+            const capSegments = config.CAP_SEGMENTS;
+
+            const streakT = new Float64Array(segments + 1);
+            const streakCurve = new Float64Array(segments + 1);
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                streakT[i] = t;
+                streakCurve[i] = Math.pow(t, 0.7);
+            }
+
+            const capCos = new Float64Array(capSegments);
+            const capSin = new Float64Array(capSegments);
+            for (let i = 1; i < capSegments; i++) {
+                const phi = Math.PI * (i / capSegments);
+                capCos[i] = Math.cos(phi);
+                capSin[i] = Math.sin(phi);
+            }
+
+            return { streakT, streakCurve, capCos, capSin };
+        }
+
+        /**
+         * Precomputes per-level and per-splash-bucket rendering descriptors
+         * (fill/stroke CSS strings, stroke widths, growth multipliers) so the
+         * render loop performs zero string allocations.
+         */
+        function buildRenderTables(config) {
+            const levels = config.INK_LEVELS;
+            const stages = config.SPLASH_STAGES;
+
+            const levelInkStyle = [];
+            const levelHighlightStyle = [];
+            const levelHighlightWidth = new Float64Array(levels);
+
+            for (let level = 0; level < levels; level++) {
+                const l = levels > 1 ? level / (levels - 1) : 1;
+                const inkAlpha = mix(config.FAR_ALPHA, config.NEAR_ALPHA, l);
+                const highlightAlpha = config.HIGHLIGHT_ALPHA * mix(0.55, 1, l);
+                const halfWidth = mix(
+                    config.HALF_WIDTH_MIN,
+                    config.HALF_WIDTH_MAX,
+                    Math.pow(l, config.WIDTH_EXPONENT)
+                );
+
+                levelInkStyle[level] = rgba(config.COLOR_R, config.COLOR_G, config.COLOR_B, inkAlpha);
+                levelHighlightStyle[level] = rgba(
+                    config.HIGHLIGHT_R,
+                    config.HIGHLIGHT_G,
+                    config.HIGHLIGHT_B,
+                    highlightAlpha
+                );
+                levelHighlightWidth[level] = clamp(config.HIGHLIGHT_WIDTH * halfWidth, 0.3, 1.8);
+            }
+
+            const totalSplashBuckets = levels * stages;
+            const splashBucketStyles = [];
+
+            for (let b = 0; b < totalSplashBuckets; b++) {
+                const level = Math.floor(b / stages);
+                const l = levels > 1 ? level / (levels - 1) : 1;
+                const p = ((b % stages) + 0.5) / stages;
+                const scale = mix(config.SCALE_MIN, config.SCALE_MAX, l);
+
+                const alpha = mix(0.55, 0.95, l) * config.SPLASH_ALPHA * Math.pow(1 - p, 1.6);
+                const grow = 1 - Math.pow(1 - p, 2.4);
+
+                splashBucketStyles[b] = {
+                    grow,
+                    ringScale: 0.25 + 0.75 * grow,
+                    lineWidth: clamp(config.SPLASH_WIDTH * scale, 0.4, 2.4),
+                    splatFillStyle: rgba(config.COLOR_R, config.COLOR_G, config.COLOR_B, alpha * 0.55),
+                    ringStrokeStyle: rgba(config.COLOR_R, config.COLOR_G, config.COLOR_B, alpha),
+                    beadFillStyle: rgba(config.COLOR_R, config.COLOR_G, config.COLOR_B, alpha * 0.9),
+                };
+            }
+
+            return {
+                levelInkStyle,
+                levelHighlightStyle,
+                levelHighlightWidth,
+                splashBucketStyles,
+            };
+        }
+
+        // =====================================================================
+        // RAIN SIMULATION ENGINE
+        // =====================================================================
+
         class RainSystem {
-            constructor() {
-                this.canvas = document.getElementById('canvas');
+            constructor(config = RAIN_CONFIG) {
+                this.config = config;
+                this.canvas = document.querySelector('#canvas');
                 this.ctx = this.canvas.getContext('2d');
+                this.groundPlane = document.querySelector('#ground-plane');
+
+                // Environment capabilities & accessibility preferences
+                this.isMobile =
+                    MOBILE_UA_REGEX.test(navigator.userAgent) ||
+                    window.innerWidth < MOBILE_BREAKPOINT;
+                this.speedMultiplier = this.isMobile ? 1.4 : 1.0;
+                this.prefersReducedMotion = window.matchMedia(
+                    '(prefers-reduced-motion: reduce)'
+                ).matches;
+
+                // Simulation state
                 this.drops = [];
                 this.splashes = [];
                 this.time = 0;
                 this.lastTimestamp = 0;
-                this.timeStep = 1000 / 60; // physics is expressed per 1/60 s tick
-                this.groundPlane = document.getElementById('ground-plane');
+                this.width = 0;
+                this.height = 0;
+                this.horizon = 0;
+                this.groundSpan = 1;
 
-                /* Drops are bucketed by ink density before each draw, so a whole
-                   shower costs a handful of fill calls instead of one draw per
-                   drop. The arrays are reused to keep the GC quiet. */
-                this.levels = RAIN_CONFIG.INK_LEVELS;
-                this.streakBuckets = [];
-                this.headBuckets = [];
-                this.highlightBuckets = [];
-                for (let i = 0; i < this.levels; i++) {
-                    this.streakBuckets.push([]);
-                    this.headBuckets.push([]);
-                    this.highlightBuckets.push([]);
-                }
+                // Precomputed lookup tables
+                this.geometry = buildGeometryTables(config);
+                this.styles = buildRenderTables(config);
 
-                /* Splashes are bucketed the same way, with the fade quantised
-                   into stages so the rings still batch despite dying at
-                   different moments. */
-                this.splashStages = RAIN_CONFIG.SPLASH_STAGES;
-                this.splashBuckets = [];
-                for (let i = 0; i < this.levels * this.splashStages; i++) {
-                    this.splashBuckets.push([]);
-                }
+                // Reusable render batch buckets (indexed by ink level / splash stage)
+                this.levels = config.INK_LEVELS;
+                this.splashStages = config.SPLASH_STAGES;
+                this.streakBuckets = Array.from({ length: this.levels }, () => []);
+                this.headBuckets = Array.from({ length: this.levels }, () => []);
+                this.highlightBuckets = Array.from({ length: this.levels }, () => []);
+                this.splashBuckets = Array.from(
+                    { length: this.levels * this.splashStages },
+                    () => []
+                );
 
+                // Bound callbacks
+                this.handleResize = () => this.resize();
+                this.handleFrame = (ts) => this.animate(ts);
+
+                // Setup viewport, populate drops, and pre-roll into steady state
                 this.resize();
-                this.init();
-
-                /* Pre-roll the simulation so the first painted frame is an
-                   already-settled shower instead of a row of freshly spawned
-                   vertical dashes. */
-                for (let i = 0; i < 90; i++) {
-                    this.updateRain(1);
-                    this.time += 1;
-                }
+                this.initDrops();
+                this.preroll(PREROLL_TICKS);
                 this.drawRain();
 
-                if (!prefersReducedMotion) {
-                    requestAnimationFrame((ts) => this.animate(ts));
+                if (!this.prefersReducedMotion) {
+                    requestAnimationFrame(this.handleFrame);
                 }
 
-                window.addEventListener('resize', () => this.resize());
+                window.addEventListener('resize', this.handleResize);
             }
 
+            // -----------------------------------------------------------------
+            // Viewport & Scene Setup
+            // -----------------------------------------------------------------
+
+            /**
+             * Synchronises canvas backing resolution, CSS horizon gradient,
+             * and perspective projection metrics with the current window size.
+             */
             resize() {
-                const c = RAIN_CONFIG;
+                const c = this.config;
                 const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
                 this.width = window.innerWidth;
                 this.height = window.innerHeight;
                 this.canvas.width = Math.round(this.width * dpr);
                 this.canvas.height = Math.round(this.height * dpr);
-                // Keep drawing in CSS pixels; the backing store stays sharp.
+
+                // Maintain CSS pixel coordinates while rendering at native DPR sharpness
                 this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-                /* The plane. The horizon is a fixed fraction of the height, and
-                   the distance from it to the bottom of the frame is the unit
-                   every drop is scaled by. */
                 this.horizon = this.height * c.HORIZON_RATIO;
                 this.groundSpan = Math.max(1, this.height - this.horizon);
 
-                /* A wash that fades in above the horizon, so the plane has a
-                   presence without a hard drawn line across the page. It is set
-                   as a CSS background in percentages, so it is resolution
-                   independent and repainted by the compositor once, not by the
-                   canvas sixty times a second. */
                 const hazeRatio = c.HORIZON_RATIO - (1 - c.HORIZON_RATIO) * c.HORIZON_HAZE;
-                this.groundPlane.style.background = 'linear-gradient(to bottom,'
-                    + ' rgba(0, 0, 0, 0) ' + (hazeRatio * 100).toFixed(2) + '%,'
-                    + ' rgba(0, 0, 0, ' + c.GROUND_ALPHA_TOP + ') ' + (c.HORIZON_RATIO * 100).toFixed(2) + '%,'
-                    + ' rgba(0, 0, 0, ' + c.GROUND_ALPHA_BOTTOM + ') 100%)';
+                this.groundPlane.style.background =
+                    'linear-gradient(to bottom,' +
+                    ` rgba(0, 0, 0, 0) ${(hazeRatio * 100).toFixed(2)}%,` +
+                    ` rgba(0, 0, 0, ${c.GROUND_ALPHA_TOP}) ${(c.HORIZON_RATIO * 100).toFixed(2)}%,` +
+                    ` rgba(0, 0, 0, ${c.GROUND_ALPHA_BOTTOM}) 100%)`;
 
-                if (this.drops.length) this.drawRain();
+                if (this.drops.length > 0) {
+                    this.drawRain();
+                }
             }
 
-            // ---- Properties derived from a drop's depth ----------------------
+            /** Populates the initial raindrop pool according to device tier. */
+            initDrops() {
+                const count = this.isMobile
+                    ? this.config.MOBILE_COUNT
+                    : this.config.DESKTOP_COUNT;
 
-            // Depth -> 0 (a speck on the horizon) .. 1 (right at the camera)
+                for (let i = 0; i < count; i++) {
+                    const drop = {};
+                    this.seedDrop(drop, true);
+                    this.drops.push(drop);
+                }
+            }
+
+            /** Advances the simulation off-screen so frame 0 renders a settled shower. */
+            preroll(ticks) {
+                for (let i = 0; i < ticks; i++) {
+                    this.updateRain(1);
+                    this.time += 1;
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // Depth & Weather Helpers
+            // -----------------------------------------------------------------
+
+            /** Maps a drop's `scale` into normalised depth `[0, 1]`. */
             scaleToNorm(scale) {
-                const c = RAIN_CONFIG;
+                const c = this.config;
                 return clamp((scale - c.SCALE_MIN) / (c.SCALE_MAX - c.SCALE_MIN), 0, 1);
             }
 
-            // Representative depth of an ink level, for batching.
-            scaleForLevel(level) {
-                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
-                return mix(RAIN_CONFIG.SCALE_MIN, RAIN_CONFIG.SCALE_MAX, l);
-            }
-
-            halfWidthForLevel(level) {
-                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
-                return mix(
-                    RAIN_CONFIG.HALF_WIDTH_MIN,
-                    RAIN_CONFIG.HALF_WIDTH_MAX,
-                    Math.pow(l, RAIN_CONFIG.WIDTH_EXPONENT)
-                );
-            }
-
+            /** Maps normalised depth `[0, 1]` to a discrete ink bucket index. */
             levelForNorm(norm) {
                 return Math.round(clamp(norm, 0, 1) * (this.levels - 1));
             }
 
-            levelAlpha(level) {
-                const c = RAIN_CONFIG;
-                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
-                return mix(c.FAR_ALPHA, c.NEAR_ALPHA, l);
-            }
-
-            ink(alpha) {
-                const c = RAIN_CONFIG;
-                return `rgba(${c.COLOR_R}, ${c.COLOR_G}, ${c.COLOR_B}, ${alpha})`;
-            }
-
-            highlightColor(level) {
-                const c = RAIN_CONFIG;
-                const l = this.levels > 1 ? level / (this.levels - 1) : 1;
-                const alpha = c.HIGHLIGHT_ALPHA * mix(0.55, 1, l);
-                return `rgba(${c.HIGHLIGHT_R}, ${c.HIGHLIGHT_G}, ${c.HIGHLIGHT_B}, ${alpha})`;
-            }
-
-            /* One shared wind field: a slow gust cycle plus fronts that travel
-               sideways, so neighbouring drops lean almost the same way and the
-               screen reads as a single weather system. */
+            /**
+             * Evaluates the shared horizontal wind velocity at screen coordinate `x`.
+             * Combines a primary low-frequency wave with a secondary harmonic so
+             * gusts roll smoothly across the viewport.
+             */
             windAt(x) {
-                const c = RAIN_CONFIG;
+                const c = this.config;
                 const phase = this.time * c.WIND_FREQUENCY - x * c.WIND_TRAVEL;
-                return c.WIND_BASE + c.WIND_GUST * (Math.sin(phase) * 0.72 + Math.sin(phase * 2.3 + 1.7) * 0.28);
+                const gustWave = Math.sin(phase) * 0.72 + Math.sin(phase * 2.3 + 1.7) * 0.28;
+                return c.WIND_BASE + c.WIND_GUST * gustWave;
             }
 
-            /* Give a drop every property that follows from where it lands on the
-               plane. Called at spawn and again after every impact. */
-            seed(drop, initial) {
-                const c = RAIN_CONFIG;
+            // -----------------------------------------------------------------
+            // Drop Lifecycle & Physics Update
+            // -----------------------------------------------------------------
 
-                /* Pick the landing point first: a spot on the plane, from the
-                   horizon out past the bottom of the frame. Depth is read
-                   straight off how far down the screen that spot is, and
-                   nothing else needs a camera matrix. */
-                /* Two populations rather than one: most drops belong to the
-                   dense field out toward the horizon, and a few live right at
-                   the lens, so the shower has both distance and foreground. */
+            /**
+             * Assigns a drop's depth, landing point, appearance, and initial
+             * kinematics. Called on initial creation and recycled after impact.
+             *
+             * @param {Object}  drop    Target drop state object to mutate in place.
+             * @param {boolean} initial When true, scatters `y` along the full fall column.
+             */
+            seedDrop(drop, initial) {
+                const c = this.config;
+
+                // Sample depth from a bimodal distribution: dense horizon + foreground accents
                 const depth = Math.random() < c.NEAR_FRACTION
                     ? mix(0.55, 1, Math.random())
                     : Math.pow(Math.random(), c.DEPTH_BIAS);
+
                 drop.scale = mix(c.SCALE_MIN, c.SCALE_MAX, depth);
                 drop.norm = this.scaleToNorm(drop.scale);
                 drop.landY = this.horizon + drop.scale * this.groundSpan;
-
-                /* The column it falls down. A drop keeps its x all the way to
-                   the ground; only the wind moves it. */
                 drop.x = Math.random() * (this.width + c.SPAWN_MARGIN * 2) - c.SPAWN_MARGIN;
 
-                // Apparent size, and therefore the ink density it is drawn at.
+                // Visual weight & ink level
                 drop.halfWidth = mix(
                     c.HALF_WIDTH_MIN,
                     c.HALF_WIDTH_MAX,
@@ -383,82 +481,61 @@
                 );
                 drop.level = this.levelForNorm(drop.norm);
 
-                // Individual character, fixed for the lifetime of the drop so
-                // nothing flickers as it falls.
+                // Per-drop physical character (fixed for the lifetime of this fall)
                 drop.taper = mix(c.TAPER_MIN, c.TAPER_MAX, Math.random());
                 drop.slant = (Math.random() - 0.5) * c.SLANT_JITTER;
                 drop.wobble = Math.random() * TAU;
                 drop.wobbleSpeed = mix(c.WOBBLE_SPEED_MIN, c.WOBBLE_SPEED_MAX, Math.random());
                 drop.jitter = 1 + (Math.random() - 0.5) * 2 * c.LENGTH_JITTER;
 
-                /* Screen speed follows depth: the same drop four times closer
-                   sweeps four times as many pixels per tick. */
-                drop.speed = c.FALL_SPEED * drop.scale
-                    * (1 + (Math.random() - 0.5) * 2 * c.FALL_JITTER);
+                // Kinematics scaled by perspective depth
+                drop.speed = c.FALL_SPEED * drop.scale * (1 + (Math.random() - 0.5) * 2 * c.FALL_JITTER);
                 drop.vy = drop.speed;
                 drop.vx = 0;
                 drop.dirX = 0;
                 drop.dirY = 1;
                 drop.length = clamp(drop.speed * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
 
-                /* Start at the top of this drop's column: the column is a fixed
-                   world height, so on screen it shrinks with distance. A far
-                   drop's whole fall is a short slow band just above its landing
-                   point; a near drop starts above the frame and sweeps in. */
-                const travel = c.TRAVEL_SCREEN * drop.scale
-                    * mix(c.TRAVEL_FACTOR_MIN, 1, Math.random());
-                drop.y = drop.landY - travel;
-
-                // On the first pass, scatter the shower through the whole column
-                // instead of stacking every drop at the top of its own band.
-                if (initial) {
-                    drop.y = drop.landY - travel * Math.random();
-                }
+                const travel = c.TRAVEL_SCREEN * drop.scale * mix(c.TRAVEL_FACTOR_MIN, 1, Math.random());
+                drop.y = initial
+                    ? drop.landY - travel * Math.random()
+                    : drop.landY - travel;
             }
 
-            init() {
-                // Adjust count based on device capability using config
-                const rainCount = isMobile ? RAIN_CONFIG.MOBILE_COUNT : RAIN_CONFIG.DESKTOP_COUNT;
-
-                for (let i = 0; i < rainCount; i++) {
-                    const drop = {};
-                    this.seed(drop, true);
-                    this.drops.push(drop);
-                }
-            }
-
+            /** Advances all active raindrops and splashes by `dt` (in 1/60s ticks). */
             updateRain(dt) {
-                const c = RAIN_CONFIG;
+                const c = this.config;
+                const windLerp = clamp(c.WIND_RESPONSE * dt, 0, 1);
 
                 for (let i = 0; i < this.drops.length; i++) {
                     const drop = this.drops[i];
 
-                    /* Light drops are carried by the wind, heavy ones keep
-                       falling almost straight, plus a little turbulence. */
-                    const targetVx = (this.windAt(drop.x) + drop.slant
-                        + Math.sin(drop.wobble) * c.WOBBLE_STRENGTH) * drop.scale;
-                    drop.vx += (targetVx - drop.vx) * clamp(c.WIND_RESPONSE * dt, 0, 1);
+                    // Horizontal velocity relaxes toward the local wind + turbulence
+                    const targetVx = (
+                        this.windAt(drop.x) +
+                        drop.slant +
+                        Math.sin(drop.wobble) * c.WOBBLE_STRENGTH
+                    ) * drop.scale;
+                    drop.vx += (targetVx - drop.vx) * windLerp;
 
                     drop.wobble += drop.wobbleSpeed * dt;
                     drop.x += drop.vx * dt;
                     drop.y += drop.vy * dt;
 
-                    // The streak is the distance covered during the exposure, so
-                    // it is always drawn along the true direction of travel.
+                    // Align streak vector with instantaneous velocity
                     drop.length = clamp(drop.speed * c.EXPOSURE * drop.jitter, c.LENGTH_MIN, c.LENGTH_MAX);
-                    const inv = 1 / Math.hypot(drop.vx, drop.vy);
-                    drop.dirX = drop.vx * inv;
-                    drop.dirY = drop.vy * inv;
+                    const invSpeed = 1 / Math.hypot(drop.vx, drop.vy);
+                    drop.dirX = drop.vx * invSpeed;
+                    drop.dirY = drop.vy * invSpeed;
 
-                    /* Impact: the drop reached the plane. Splash where it landed,
-                       then a fresh drop is born somewhere else on the plane. */
+                    // Ground plane impact check
                     if (drop.y >= drop.landY) {
-                        this.impact(drop);
-                        this.seed(drop, false);
+                        this.spawnSplash(drop);
+                        this.seedDrop(drop, false);
                         continue;
                     }
 
-                    // Keep drifting drops inside the field instead of losing them.
+                    // Horizontal toroidal wrap so wind-driven drops stay within the field
                     const margin = drop.length + c.SPAWN_MARGIN;
                     const span = this.width + margin * 2;
                     if (drop.x > this.width + margin) {
@@ -471,15 +548,15 @@
                 this.updateSplashes(dt);
             }
 
-            /* A drop just hit the ground. Remember the impact point and throw up
-               a handful of droplets; the ring and the droplets are cheap because
-               they are absolute offsets from that point. */
-            impact(drop) {
-                const c = RAIN_CONFIG;
+            /**
+             * Spawns a ground splash ring and crown droplets at a drop's landing site.
+             */
+            spawnSplash(drop) {
+                const c = this.config;
 
-                // Landed below the bottom of the frame: nothing to see.
-                if (drop.landY > this.height + 6) return;
-                if (this.splashes.length >= c.MAX_SPLASHES) return;
+                if (drop.landY > this.height + 6 || this.splashes.length >= c.MAX_SPLASHES) {
+                    return;
+                }
 
                 const splash = {
                     x: drop.x,
@@ -493,19 +570,21 @@
                     flat: mix(c.SPLASH_FLAT_FAR, c.SPLASH_FLAT_NEAR, drop.norm),
                     age: 0,
                     life: Math.max(6, mix(c.SPLASH_LIFE_MIN, c.SPLASH_LIFE_MAX, Math.random())),
-                    beads: null
+                    beads: null,
                 };
 
-                const count = c.SPLASH_BEADS_MIN
-                    + Math.floor(Math.random() * (c.SPLASH_BEADS_MAX - c.SPLASH_BEADS_MIN + 1));
-                if (count > 0) {
+                const beadCount =
+                    c.SPLASH_BEADS_MIN +
+                    Math.floor(Math.random() * (c.SPLASH_BEADS_MAX - c.SPLASH_BEADS_MIN + 1));
+
+                if (beadCount > 0) {
                     splash.beads = [];
-                    for (let i = 0; i < count; i++) {
+                    for (let i = 0; i < beadCount; i++) {
                         splash.beads.push({
                             x: 0,
                             y: 0,
                             vx: (Math.random() - 0.5) * 2.4 * drop.scale,
-                            vy: -(0.45 + Math.random() * 0.75) * c.SPLASH_BEAD_SPEED * drop.scale
+                            vy: -(0.45 + Math.random() * 0.75) * c.SPLASH_BEAD_SPEED * drop.scale,
                         });
                     }
                 }
@@ -513,10 +592,14 @@
                 this.splashes.push(splash);
             }
 
+            /**
+             * Advances splash timers and crown droplet ballistic trajectories,
+             * compacting expired splashes in-place without array reallocation.
+             */
             updateSplashes(dt) {
-                const c = RAIN_CONFIG;
+                const gravityBase = this.config.SPLASH_BEAD_GRAVITY;
                 const splashes = this.splashes;
-                let write = 0;
+                let writeIndex = 0;
 
                 for (let i = 0; i < splashes.length; i++) {
                     const splash = splashes[i];
@@ -524,7 +607,7 @@
                     if (splash.age >= splash.life) continue;
 
                     if (splash.beads) {
-                        const gravity = c.SPLASH_BEAD_GRAVITY * splash.scale;
+                        const gravity = gravityBase * splash.scale;
                         for (let j = 0; j < splash.beads.length; j++) {
                             const bead = splash.beads[j];
                             bead.vy += gravity * dt;
@@ -533,53 +616,59 @@
                         }
                     }
 
-                    // Compact in place: dead splashes are overwritten by survivors.
-                    splashes[write++] = splash;
+                    splashes[writeIndex++] = splash;
                 }
-                splashes.length = write;
+
+                splashes.length = writeIndex;
             }
 
-            /* Trace one tapered silhouette: a point at the tail, widening to the
-               drop at the head, closed with a rounded cap. Straight, because a
-               trail recorded in a single instant really is straight. */
+            // -----------------------------------------------------------------
+            // Canvas Path Tracing & Batched Rendering
+            // -----------------------------------------------------------------
+
+            /**
+             * Appends a single drop's tapered motion-blur silhouette to the
+             * current canvas path using precomputed curve and cap tables.
+             */
             traceStreak(ctx, drop) {
-                const c = RAIN_CONFIG;
+                const c = this.config;
+                const { streakT, streakCurve, capCos, capSin } = this.geometry;
+
                 const len = drop.length;
                 const dirX = drop.dirX;
                 const dirY = drop.dirY;
-                const perpX = -dirY;   // left of travel
+                const perpX = -dirY;
                 const perpY = dirX;
                 const tailX = drop.x - dirX * len;
                 const tailY = drop.y - dirY * len;
                 const wHead = drop.halfWidth / c.HEAD_WIDTH;
                 const wTail = wHead * drop.taper;
+                const wSpan = wHead - wTail;
 
-                // One side, tail -> head.
+                // Left edge: tail -> head
                 for (let i = 0; i <= c.SEGMENTS; i++) {
-                    const t = i / c.SEGMENTS;
-                    const w = wTail + (wHead - wTail) * Math.pow(t, 0.7);
+                    const t = streakT[i];
+                    const w = wTail + wSpan * streakCurve[i];
                     const x = tailX + dirX * len * t + perpX * w;
                     const y = tailY + dirY * len * t + perpY * w;
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 }
 
-                // Round the head: sweep from one side to the other through the
-                // point of travel, where the drop itself sits.
+                // Rounded leading cap
                 for (let i = 1; i < c.CAP_SEGMENTS; i++) {
-                    const phi = Math.PI * (i / c.CAP_SEGMENTS);
-                    const cos = Math.cos(phi);
-                    const sin = Math.sin(phi);
+                    const cos = capCos[i];
+                    const sin = capSin[i];
                     ctx.lineTo(
                         drop.x + (perpX * cos + dirX * sin) * wHead,
                         drop.y + (perpY * cos + dirY * sin) * wHead
                     );
                 }
 
-                // Back down the other side.
+                // Right edge: head -> tail
                 for (let i = c.SEGMENTS; i >= 0; i--) {
-                    const t = i / c.SEGMENTS;
-                    const w = wTail + (wHead - wTail) * Math.pow(t, 0.7);
+                    const t = streakT[i];
+                    const w = wTail + wSpan * streakCurve[i];
                     ctx.lineTo(
                         tailX + dirX * len * t - perpX * w,
                         tailY + dirY * len * t - perpY * w
@@ -589,56 +678,58 @@
                 ctx.closePath();
             }
 
-            // Specular highlight: off-centre, on the lit side of the column.
+            /**
+             * Appends a drop's off-centre specular highlight line segment
+             * to the current canvas path.
+             */
             traceHighlight(ctx, drop) {
-                const c = RAIN_CONFIG;
+                const c = this.config;
                 const len = drop.length;
                 const offset = drop.halfWidth * c.HIGHLIGHT_OFFSET;
                 const ox = -drop.dirY * offset;
                 const oy = drop.dirX * offset;
 
-                for (let i = 0; i < 2; i++) {
-                    const t = i === 0 ? c.HIGHLIGHT_START : c.HIGHLIGHT_END;
-                    const x = drop.x - drop.dirX * len * (1 - t) + ox;
-                    const y = drop.y - drop.dirY * len * (1 - t) + oy;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
+                const startDist = len * (1 - c.HIGHLIGHT_START);
+                const endDist = len * (1 - c.HIGHLIGHT_END);
+
+                ctx.moveTo(drop.x - drop.dirX * startDist + ox, drop.y - drop.dirY * startDist + oy);
+                ctx.lineTo(drop.x - drop.dirX * endDist + ox, drop.y - drop.dirY * endDist + oy);
             }
 
-            /* Splashes, batched by ink level and by a quantised fade stage. The
-               ring flattens as it spreads, which is what sells the plane. */
+            /**
+             * Renders all active ground splashes batched by (inkLevel, fadeStage).
+             * Each bucket issues at most three draw calls: wet splat fill,
+             * expanding ripple stroke, and airborne crown droplet fill.
+             */
             drawSplashes() {
                 const ctx = this.ctx;
-                const c = RAIN_CONFIG;
                 const stages = this.splashStages;
                 const buckets = this.splashBuckets;
+                const bucketStyles = this.styles.splashBucketStyles;
 
-                for (let i = 0; i < buckets.length; i++) buckets[i].length = 0;
+                for (let i = 0; i < buckets.length; i++) {
+                    buckets[i].length = 0;
+                }
+
                 for (let i = 0; i < this.splashes.length; i++) {
                     const splash = this.splashes[i];
-                    const p = clamp(splash.age / splash.life, 0, 0.9999);
-                    buckets[splash.level * stages + Math.floor(p * stages)].push(splash);
+                    const progress = clamp(splash.age / splash.life, 0, 0.9999);
+                    const bucketIdx = splash.level * stages + Math.floor(progress * stages);
+                    buckets[bucketIdx].push(splash);
                 }
 
                 ctx.lineCap = 'round';
 
                 for (let b = 0; b < buckets.length; b++) {
                     const list = buckets[b];
-                    if (!list.length) continue;
+                    if (list.length === 0) continue;
 
-                    const level = Math.floor(b / stages);
-                    const l = this.levels > 1 ? level / (this.levels - 1) : 1;
-                    const p = ((b % stages) + 0.5) / stages;
-                    const scale = this.scaleForLevel(level);
-                    /* Splashes ink the ground, so they stay darker than the
-                       rain that made them; only the fade is quantised. */
-                    const alpha = mix(0.55, 0.95, l) * c.SPLASH_ALPHA
-                        * Math.pow(1 - p, 1.6);
-                    const grow = 1 - Math.pow(1 - p, 2.4);
+                    const style = bucketStyles[b];
+                    const grow = style.grow;
+                    const ringScale = style.ringScale;
 
-                    // The splat itself: a soft wet mark that dries as it spreads.
-                    ctx.fillStyle = this.ink(alpha * 0.55);
+                    // 1. Inner wet splat mark
+                    ctx.fillStyle = style.splatFillStyle;
                     ctx.beginPath();
                     for (let i = 0; i < list.length; i++) {
                         const splash = list[i];
@@ -649,22 +740,22 @@
                     }
                     ctx.fill();
 
-                    // The ring, spreading out across the plane.
-                    ctx.strokeStyle = this.ink(alpha);
-                    ctx.lineWidth = clamp(c.SPLASH_WIDTH * scale, 0.4, 2.4);
+                    // 2. Expanding elliptical ripple ring
+                    ctx.strokeStyle = style.ringStrokeStyle;
+                    ctx.lineWidth = style.lineWidth;
                     ctx.beginPath();
                     for (let i = 0; i < list.length; i++) {
                         const splash = list[i];
-                        const rx = Math.max(0.4, splash.radius * (0.25 + 0.75 * grow));
+                        const rx = Math.max(0.4, splash.radius * ringScale);
                         const ry = Math.max(0.25, rx * splash.flat);
                         ctx.moveTo(splash.x + rx, splash.y);
                         ctx.ellipse(splash.x, splash.y, rx, ry, 0, 0, TAU);
                     }
                     ctx.stroke();
 
-                    // The crown droplets, still in the air above the impact.
-                    ctx.fillStyle = this.ink(alpha * 0.9);
-                    let any = false;
+                    // 3. Airborne crown droplets
+                    ctx.fillStyle = style.beadFillStyle;
+                    let hasAirborneBeads = false;
                     ctx.beginPath();
                     for (let i = 0; i < list.length; i++) {
                         const splash = list[i];
@@ -672,35 +763,41 @@
                         const r = Math.max(0.3, 0.85 * splash.scale);
                         for (let j = 0; j < splash.beads.length; j++) {
                             const bead = splash.beads[j];
-                            if (bead.y > 0) continue;   // already back on the ground
+                            if (bead.y > 0) continue; // Below ground plane
                             const bx = splash.x + bead.x;
                             const by = splash.y + bead.y;
                             ctx.moveTo(bx + r, by);
                             ctx.arc(bx, by, r, 0, TAU);
-                            any = true;
+                            hasAirborneBeads = true;
                         }
                     }
-                    if (any) ctx.fill();
+                    if (hasAirborneBeads) {
+                        ctx.fill();
+                    }
                 }
             }
 
+            /**
+             * Clears the canvas and renders the full rain scene in back-to-front
+             * order, batching geometry by quantized ink density level.
+             */
             drawRain() {
                 const ctx = this.ctx;
-                const c = RAIN_CONFIG;
+                const c = this.config;
                 const levels = this.levels;
+                const { levelInkStyle, levelHighlightStyle, levelHighlightWidth } = this.styles;
 
-                // Bucket the drops by ink density: this is what makes the depth
-                // bands read, and it collapses the draw calls.
+                // Clear per-level batch queues
                 for (let l = 0; l < levels; l++) {
                     this.streakBuckets[l].length = 0;
                     this.headBuckets[l].length = 0;
                     this.highlightBuckets[l].length = 0;
                 }
+
+                // Partition drops into depth-of-field ink buckets
                 for (let i = 0; i < this.drops.length; i++) {
                     const drop = this.drops[i];
                     this.streakBuckets[drop.level].push(drop);
-                    // The drop is one density darker than its own trail, which is
-                    // the head-biased fade that real streaks have.
                     this.headBuckets[Math.min(levels - 1, drop.level + 1)].push(drop);
                     if (drop.halfWidth >= c.HIGHLIGHT_MIN_HALF_WIDTH) {
                         this.highlightBuckets[drop.level].push(drop);
@@ -709,86 +806,87 @@
 
                 ctx.clearRect(0, 0, this.width, this.height);
 
-                // 1. Splashes, beneath the rain, so drops pass in front of them.
-                //    (The plane itself is a CSS layer underneath the canvas.)
+                // Pass 1: Ground splashes (underneath falling drops)
                 this.drawSplashes();
 
-                // 2. Trails
+                // Pass 2: Tapered motion-blur trails
                 for (let l = 0; l < levels; l++) {
                     const list = this.streakBuckets[l];
-                    if (!list.length) continue;
-                    ctx.fillStyle = this.ink(this.levelAlpha(l));
+                    if (list.length === 0) continue;
+                    ctx.fillStyle = levelInkStyle[l];
                     ctx.beginPath();
-                    for (let i = 0; i < list.length; i++) this.traceStreak(ctx, list[i]);
+                    for (let i = 0; i < list.length; i++) {
+                        this.traceStreak(ctx, list[i]);
+                    }
                     ctx.fill();
                 }
 
-                // 3. The drops themselves
+                // Pass 3: Darker leading drop beads
                 for (let l = 0; l < levels; l++) {
                     const list = this.headBuckets[l];
-                    if (!list.length) continue;
-                    ctx.fillStyle = this.ink(this.levelAlpha(l));
+                    if (list.length === 0) continue;
+                    ctx.fillStyle = levelInkStyle[l];
                     ctx.beginPath();
                     for (let i = 0; i < list.length; i++) {
                         const drop = list[i];
                         const r = drop.halfWidth;
-                        // moveTo first, otherwise arc() joins the previous subpath
                         ctx.moveTo(drop.x + r, drop.y);
                         ctx.arc(drop.x, drop.y, r, 0, TAU);
                     }
                     ctx.fill();
                 }
 
-                // 4. Highlights
+                // Pass 4: Specular highlights on foreground streaks
                 ctx.lineCap = 'round';
                 for (let l = 0; l < levels; l++) {
                     const list = this.highlightBuckets[l];
-                    if (!list.length) continue;
-                    ctx.strokeStyle = this.highlightColor(l);
-                    ctx.lineWidth = clamp(
-                        c.HIGHLIGHT_WIDTH * this.halfWidthForLevel(l),
-                        0.3,
-                        1.8
-                    );
+                    if (list.length === 0) continue;
+                    ctx.strokeStyle = levelHighlightStyle[l];
+                    ctx.lineWidth = levelHighlightWidth[l];
                     ctx.beginPath();
-                    for (let i = 0; i < list.length; i++) this.traceHighlight(ctx, list[i]);
+                    for (let i = 0; i < list.length; i++) {
+                        this.traceHighlight(ctx, list[i]);
+                    }
                     ctx.stroke();
                 }
             }
 
+            // -----------------------------------------------------------------
+            // Main Animation Loop
+            // -----------------------------------------------------------------
+
+            /**
+             * Variable-timestep `requestAnimationFrame` callback. Clamps large
+             * frame deltas (e.g., after background tab suspension) so the
+             * simulation never jumps.
+             */
             animate(timestamp) {
-                if (!this.lastTimestamp) this.lastTimestamp = timestamp;
+                if (!this.lastTimestamp) {
+                    this.lastTimestamp = timestamp;
+                }
 
-                let delta = timestamp - this.lastTimestamp;
+                const rawDelta = timestamp - this.lastTimestamp;
                 this.lastTimestamp = timestamp;
-                // A frame after a background tab or a stall can carry seconds of
-                // time; clamp it so the shower never jumps.
-                if (delta < 0) delta = 0;
-                if (delta > 100) delta = 100;
 
-                /* Variable timestep, expressed in 1/60 s ticks. The old fixed
-                   step only advanced on frames where a whole 16.7 ms had piled
-                   up, so on a 120 Hz display every second frame showed no
-                   movement at all -- smooth screen, stuttering rain. Deriving dt
-                   from the actual frame time keeps the rain at the right speed
-                   and moves it on every single frame. */
-                const dt = clamp(delta / this.timeStep, 0, 3) * mobileSpeedMultiplier;
+                const delta = clamp(rawDelta, 0, 100);
+                const dt = clamp(delta / TICK_MS, 0, 3) * this.speedMultiplier;
+
                 if (dt > 0) {
                     this.updateRain(dt);
                     this.time += dt;
                 }
 
                 this.drawRain();
-
-                requestAnimationFrame((ts) => this.animate(ts));
+                requestAnimationFrame(this.handleFrame);
             }
         }
 
-        // Initialize when page loads
-        let rainSystem;
-        
+        // =====================================================================
+        // BOOTSTRAP
+        // =====================================================================
+
         window.addEventListener('load', () => {
-            rainSystem = new RainSystem();
+            new RainSystem();
         });
     </script>
 </body>
