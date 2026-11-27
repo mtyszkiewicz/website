@@ -30,7 +30,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=11
+VERSION=12
 
 WORK=""
 APP=""
@@ -106,7 +106,7 @@ aspot-bot — uruchamia panel lekarski bez instalowania czegokolwiek.
 
 Gdy nie ma curl (albo wget), to samo zrobi Python:
 
-  python3 -c 'import urllib.request as u,sys;sys.stdout.write(u.urlopen(sys.argv[1]).read().decode())' '$BASE/?code=$SCRIPT_CODE' | bash
+  python3 -c 'import urllib.request as u,sys;r=u.Request(sys.argv[1],headers={"User-Agent":"aspot-bot"});sys.stdout.write(u.urlopen(r).read().decode())' '$BASE/?code=$SCRIPT_CODE' | bash
 
 Wymaga: Linux, tar i chociaż jednego z: curl, wget, python3. Do okna Firefox
 (mObywatel, podpis e-ZLA) potrzebny pulpit albo Xvfb. ~150 MB cache przy
@@ -255,12 +255,14 @@ fetch_to() {
       fi
       ;;
     python3)
-      python3 - "$url" "$out" "$head" <<'PY'
+      # The UA is not cosmetic: Cloudflare 403s Python's default "Python-urllib/…".
+      python3 - "$url" "$out" "$head" "aspot-bot/$VERSION" <<'PY'
 import sys
 import urllib.request
 
-url, out, head = sys.argv[1:4]
-with urllib.request.urlopen(url, timeout=30) as response:
+url, out, head, agent = sys.argv[1:5]
+request = urllib.request.Request(url, headers={"User-Agent": agent})
+with urllib.request.urlopen(request, timeout=30) as response:
     body = response.read()
     if head:
         lines = [f"HTTP/1.1 {response.status} {response.reason}"]
@@ -280,11 +282,12 @@ probe_http() {
     curl) curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null ;;
     wget) wget -q --timeout=2 --spider "$1" 2>/dev/null ;;
     python3)
-      python3 - "$1" <<'PY' 2>/dev/null
+      python3 - "$1" "aspot-bot/$VERSION" <<'PY' 2>/dev/null
 import sys
 import urllib.request
 
-with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+request = urllib.request.Request(sys.argv[1], headers={"User-Agent": sys.argv[2]})
+with urllib.request.urlopen(request, timeout=2) as response:
     response.read(1)
 PY
       ;;
