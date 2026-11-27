@@ -19,6 +19,7 @@
 #   ASPOT_BOT_TARBALL_CODE  kod paczki (domyślnie 123456789)
 #   ASPOT_BOT_KEEP=1        zostaw katalog roboczy po wyjściu (wypisze ścieżkę)
 #   ASPOT_BOT_LOG_LINES     ile linii app.log pokazać przy błędzie (domyślnie 30)
+#   ASPOT_BOT_DOWNLOADER    wymuś curl/wget/python3 (domyślnie: pierwszy dostępny)
 
 set -Eeuo pipefail
 
@@ -27,7 +28,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=2
+VERSION=3
 
 WORK=""
 APP=""
@@ -74,8 +75,14 @@ aspot-bot — uruchamia panel lekarski bez instalowania czegokolwiek.
 
   curl --proto '=https' -fsSL '$BASE/?code=$SCRIPT_CODE' | bash
 
-Wymaga: Ubuntu z pulpitem (DISPLAY), curl, tar, ~150 MB wolnego miejsca na
-cache przy pierwszym uruchomieniu. Nie wymaga sudo.
+Gdy nie ma curl (albo wget), to samo zrobi Python:
+
+  python3 -c 'import urllib.request as u,sys;sys.stdout.write(u.urlopen(sys.argv[1]).read().decode())' '$BASE/?code=$SCRIPT_CODE' | bash
+
+Wymaga: Ubuntu/Linux, tar i chociaż jednego z: curl, wget, python3. Do okna
+Firefox (mObywatel, podpis e-ZLA) potrzebny pulpit albo Xvfb. ~150 MB wolnego
+miejsca na cache przy pierwszym uruchomieniu. Nie wymaga sudo. Ostateczność bez żadnego z nich: otwórz $BASE/?code=$SCRIPT_CODE
+w Firefoksie (pobierze run.sh) i uruchom: bash ~/Pobrane/run.sh
 EOF
 }
 
@@ -141,20 +148,107 @@ case "$(uname -m)" in
   aarch64|arm64) UV_TARGET="aarch64-unknown-linux-gnu" ;;
   *) fail "nieobsługiwany procesor: $(uname -m)" ;;
 esac
-command -v curl >/dev/null 2>&1 || fail "brak curl — poproś administratora: sudo apt install curl"
-command -v tar  >/dev/null 2>&1 || fail "brak tar — poproś administratora: sudo apt install tar"
+command -v tar >/dev/null 2>&1 || fail "brak tar — poproś administratora: sudo apt install tar"
 
+# No hard gate on a graphical session: the panel is plain HTTP and the Firefox
+# pre-check below is headless, so this runs fine in a container.  Only the
+# gabinet window (mObywatel login, e-ZLA signature) needs a real display.
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-  fail "brak sesji graficznej (DISPLAY/WAYLAND_DISPLAY) — uruchom to na pulpicie Ubuntu, nie przez ssh"
+  warn "brak DISPLAY — panel wystartuje, ale okno Firefox (mObywatel, podpis e-ZLA)
+  nie otworzy się. W kontenerze: apt install xvfb, potem
+  xvfb-run -s '-screen 0 1400x900x24' bash run.sh"
 fi
 
-# Downloads are pinned to HTTPS when the base is HTTPS: without --proto a plain
-# `curl mtyszkiewicz.dev?code=420` would start on http:// and -L would upgrade
-# later, i.e. the first hop could already be an attacker's script.
-CURL=(curl -fsSL --retry 3 --connect-timeout 15)
-case "$BASE" in
-  https://*) CURL=(curl --proto '=https' -fsSL --retry 3 --connect-timeout 15) ;;
+# Ubuntu desktops ship curl, minimal images often have only wget or python3, and
+# the doctor's one-liner cannot assume any of them -- so every fetch (uv, the
+# tarball, the readiness probes) goes through one layer that picks whichever
+# downloader exists.  ASPOT_BOT_DOWNLOADER forces one, for testing.
+PINS_HTTPS=0
+case "$BASE" in https://*) PINS_HTTPS=1 ;; esac
+
+DOWNLOADER="${ASPOT_BOT_DOWNLOADER:-}"
+if [ -z "$DOWNLOADER" ]; then
+  if command -v curl >/dev/null 2>&1; then DOWNLOADER=curl
+  elif command -v wget >/dev/null 2>&1; then DOWNLOADER=wget
+  elif command -v python3 >/dev/null 2>&1; then DOWNLOADER=python3
+  fi
+fi
+case "$DOWNLOADER" in
+  curl|wget|python3) ;;
+  *)
+    DOWNLOADER=""
+    ;;
 esac
+if [ -z "$DOWNLOADER" ] || ! command -v "$DOWNLOADER" >/dev/null 2>&1; then
+  fail "brak curl, wget i python3 — nie mam czym pobrać aplikacji.
+  Poproś administratora o: sudo apt install curl
+  Albo otwórz $BASE/?code=$SCRIPT_CODE w Firefoksie (pobierze run.sh) i uruchom:
+    bash ~/Pobrane/run.sh"
+fi
+
+# fetch_to <url> <out-file> [<header-file>] — download a URL, optionally saving
+# the response headers (the tarball's sha256 travels in X-Aspot-Bot-Sha256).
+fetch_to() {
+  local url=$1 out=$2 head=${3:-}
+  case "$DOWNLOADER" in
+    curl)
+      local opts=(-fsSL --retry 3 --connect-timeout 15)
+      if [ "$PINS_HTTPS" = 1 ]; then
+        # Without --proto a bare `mtyszkiewicz.dev?code=420` starts on http:// and
+        # only upgrades later -- the first hop could already be an attacker.
+        opts=(--proto '=https' "${opts[@]}")
+      fi
+      if [ -n "$head" ]; then
+        curl "${opts[@]}" -D "$head" -o "$out" "$url"
+      else
+        curl "${opts[@]}" -o "$out" "$url"
+      fi
+      ;;
+    wget)
+      # -S prints the response headers; -q keeps the progress bar out of them.
+      if [ -n "$head" ]; then
+        wget -q -S --timeout=30 --tries=3 -O "$out" "$url" 2>"$head"
+      else
+        wget -q --timeout=30 --tries=3 -O "$out" "$url"
+      fi
+      ;;
+    python3)
+      python3 - "$url" "$out" "$head" <<'PY'
+import sys
+import urllib.request
+
+url, out, head = sys.argv[1:4]
+with urllib.request.urlopen(url, timeout=30) as response:
+    body = response.read()
+    if head:
+        lines = [f"HTTP/1.1 {response.status} {response.reason}"]
+        lines += [f"{key}: {value}" for key, value in response.headers.items()]
+        with open(head, "w", encoding="utf-8") as handle:
+            handle.write("\r\n".join(lines) + "\r\n")
+with open(out, "wb") as handle:
+    handle.write(body)
+PY
+      ;;
+  esac
+}
+
+# probe_http <url> — 0 when the URL answers, non-zero otherwise.
+probe_http() {
+  case "$DOWNLOADER" in
+    curl) curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null ;;
+    wget) wget -q --timeout=2 --spider "$1" 2>/dev/null ;;
+    python3)
+      python3 - "$1" <<'PY' 2>/dev/null
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+    response.read(1)
+PY
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 mkdir -p "$CACHE"
 # Sweep scratch dirs from a run that was SIGKILLed (cleanup never ran) so old
@@ -177,9 +271,8 @@ if command -v uv >/dev/null 2>&1; then
   step "uv: $("$UV" --version 2>/dev/null || echo 'znaleziony w PATH')"
 else
   step "pobieram uv"
-  "${CURL[@]}" -o "$WORK/uv.tar.gz" \
-    "https://github.com/astral-sh/uv/releases/latest/download/uv-$UV_TARGET.tar.gz" \
-    || fail "nie udało się pobrać uv (brak internetu?)"
+  fetch_to "https://github.com/astral-sh/uv/releases/latest/download/uv-$UV_TARGET.tar.gz" \
+    "$WORK/uv.tar.gz" || fail "nie udało się pobrać uv (brak internetu?)"
   tar -xzf "$WORK/uv.tar.gz" -C "$WORK" || fail "nie udało się rozpakować uv"
   UV="$WORK/uv-$UV_TARGET/uv"
   [ -x "$UV" ] || fail "w archiwum uv nie ma binarki"
@@ -197,7 +290,7 @@ step "instaluję zależności: Python 3.12"
 
 APP_URL="$BASE/?code=$TARBALL_CODE"
 step "pobieram paczkę ($BASE/?code=$TARBALL_CODE)"
-"${CURL[@]}" -D "$WORK/app.head" -o "$WORK/app.tar.gz" "$APP_URL" \
+fetch_to "$APP_URL" "$WORK/app.tar.gz" "$WORK/app.head" \
   || fail "nie udało się pobrać paczki ($APP_URL)"
 
 expected="$(tr -d '\r' < "$WORK/app.head" | awk 'tolower($1) == "x-aspot-bot-sha256:" {print $2; exit}')"
@@ -252,7 +345,7 @@ ok "środowisko gotowe"
 pick_port() {
   local p
   for p in $(seq 8000 8010); do
-    if ! curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$p/" 2>/dev/null; then
+    if ! probe_http "http://127.0.0.1:$p/"; then
       printf '%s' "$p"
       return 0
     fi
@@ -274,7 +367,7 @@ APP_PID=$!
 
 ready=0
 for _ in $(seq 1 120); do
-  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null; then
+  if probe_http "http://127.0.0.1:$PORT/"; then
     ready=1
     break
   fi
