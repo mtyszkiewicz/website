@@ -30,7 +30,16 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=14
+
+# Semantic version of what is being delivered.  hot_delivery.sh bakes the real
+# value in when it publishes this script (it replaces the placeholder below), so
+# the doctor sees the version that actually shipped.  When this file is run
+# straight from the repo the VERSION next to it is read instead.
+VERSION="1.0.0"
+if [ "$VERSION" = "1.0.0" ]; then
+  VERSION="$(tr -d '[:space:]' < "$(dirname "$0")/VERSION" 2>/dev/null || true)"
+  VERSION="${VERSION:-dev}"
+fi
 
 WORK=""
 APP=""
@@ -477,6 +486,7 @@ open_browser "http://127.0.0.1:$PORT/"
 # (one stray newline here and the URL lands on a line of its own).
 progress "Panel: http://127.0.0.1:$PORT"
 progress_commit
+say "  Version: $VERSION"
 say ""
 say "  Naciśnij Enter aby wyczyścić sesję"
 
