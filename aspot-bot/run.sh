@@ -5,7 +5,7 @@
 #
 # Nothing is installed: the app, Python and its libraries live in one temporary
 # directory that disappears when Enter is pressed at the end -- together with the
-# gabinet session, screenshots and logs ("remove the evidence").  Only public
+# gabinet session, screenshots and logs ("clear the session").  Only public
 # caches survive (Playwright's Firefox, uv packages, the Python build) so the
 # next start takes ~15 s.
 #
@@ -30,7 +30,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=8
+VERSION=10
 
 WORK=""
 APP=""
@@ -47,7 +47,6 @@ HAVE_TTY=0
 VERBOSE="${ASPOT_BOT_VERBOSE:-0}"
 DIRTY=0
 
-msg()  { [ "$VERBOSE" = 1 ] && printf '%s\n' "$*"; return 0; }
 step() { [ "$VERBOSE" = 1 ] && printf '  %s\n' "$*"; return 0; }
 ok()   { [ "$VERBOSE" = 1 ] && printf '  ok: %s\n' "$*"; return 0; }
 say()  { printf '%s\n' "$*"; }
@@ -63,9 +62,10 @@ progress() {
   DIRTY=1
 }
 
-progress_end() {
+# progress_commit — stop rewriting and keep the current status line on screen.
+progress_commit() {
   if [ "$DIRTY" = 1 ]; then
-    printf '\r  %-74s\r' ''
+    printf '\n'
     DIRTY=0
   fi
   return 0
@@ -467,12 +467,12 @@ open_browser() {
 
 open_browser "http://127.0.0.1:$PORT/"
 
-printf '\n'
-progress_end
+# "startuję panel…" morphs into the URL: same line, nothing printed in between
+# (one stray newline here and the URL lands on a line of its own).
+progress "Panel: http://127.0.0.1:$PORT"
+progress_commit
 say ""
-say "  Panel: http://127.0.0.1:$PORT"
-say ""
-say "  Kiedy skończysz kliknij Enter aby usunąć dowody"
+say "  Naciśnij Enter aby wyczyścić sesję"
 
 if [ "$HAVE_TTY" = 1 ]; then
   exec 3</dev/tty
@@ -497,5 +497,5 @@ fi
 step "cache: $CACHE ${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright} ${UV_CACHE_DIR:-$HOME/.cache/uv}"
 
 say ""
-say "  dowody usunięte"
+say "  sesja wyczyszczona"
 exit 0
