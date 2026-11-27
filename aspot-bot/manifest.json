@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "app_version": "1.1.0",
-  "build": "6d6f0b45",
-  "built_at": "2026-11-27T15:26:42Z",
+  "app_version": "1.1.1",
+  "build": "9ae7575c",
+  "built_at": "2026-11-27T15:30:21Z",
   "entries": {
     "420": {
       "path": "/aspot-bot/run.sh",
@@ -11,11 +11,11 @@
       "disposition": "attachment; filename=run.sh"
     },
     "123456789": {
-      "path": "/aspot-bot/aspot-bot-6d6f0b45.tar.gz",
+      "path": "/aspot-bot/aspot-bot-9ae7575c.tar.gz",
       "type": "application/gzip",
       "disposition": "attachment; filename=aspot-bot.tar.gz",
       "cache": "public, max-age=31536000, immutable",
-      "sha256": "6d6f0b452240b5e774430361b92a35ffeaf04df874913b873c992871889d24c4"
+      "sha256": "9ae7575c99a58c158ec90b2bf63d038c734f3560e212bd4bd9d23142c1eed11b"
     }
   }
 }
