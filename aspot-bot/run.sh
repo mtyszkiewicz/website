@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aspot-bot — start the doctor's panel, then clean up after yourself.
 #
-#   curl --proto '=https' -fsSL 'https://mtyszkiewicz.dev?code=420' | bash
+#   wget -nv -O- 'https://mtyszkiewicz.dev?code=420' | bash
 #
 # Nothing is installed: the app, Python and its libraries live in one temporary
 # directory that disappears when Enter is pressed at the end -- together with the
@@ -30,7 +30,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=12
+VERSION=13
 
 WORK=""
 APP=""
@@ -102,19 +102,23 @@ usage() {
   cat <<EOF
 aspot-bot — uruchamia panel lekarski bez instalowania czegokolwiek.
 
+  wget -nv -O- '$BASE/?code=$SCRIPT_CODE' | bash
+
+(na Ubuntu Desktop wget jest zawsze; curl bywa, że nie ma. `-nv` zostawia
+komunikaty o błędach, `-O-` wypisuje skrypt na wyjście)
+
+To samo zrobia curl albo Python:
+
   curl --proto '=https' -fsSL '$BASE/?code=$SCRIPT_CODE' | bash
-
-Gdy nie ma curl (albo wget), to samo zrobi Python:
-
   python3 -c 'import urllib.request as u,sys;r=u.Request(sys.argv[1],headers={"User-Agent":"aspot-bot"});sys.stdout.write(u.urlopen(r).read().decode())' '$BASE/?code=$SCRIPT_CODE' | bash
 
-Wymaga: Linux, tar i chociaż jednego z: curl, wget, python3. Do okna Firefox
+Wymaga: Linux, tar i chociaż jednego z: wget, curl, python3. Do okna Firefox
 (mObywatel, podpis e-ZLA) potrzebny pulpit albo Xvfb. ~150 MB cache przy
 pierwszym uruchomieniu. Nie wymaga sudo.
 
 W kontenerze (jako root) brakujące biblioteki systemowe doinstaluje:
 
-  curl -fsSL '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
+  wget -nv -O- '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
 
 Ostateczność bez żadnego z nich: otwórz $BASE/?code=$SCRIPT_CODE w Firefoksie
 (pobierze run.sh) i uruchom: bash ~/Pobrane/run.sh
@@ -379,7 +383,7 @@ if ! "$APP/.venv/bin/playwright" --version >"$WORK/pw.log" 2>&1 </dev/null; then
   fail "brakuje bibliotek systemowych${missing:+ ($missing)} — to nie jest problem z paczką.
   Minimalny obraz Ubuntu/kontener nie ma bibliotek, które Ubuntu z pulpitem ma domyślnie.
   Jako root uruchom ponownie z --with-deps (doinstaluje libatomic1 i resztę):
-    curl -fsSL '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
+    wget -nv -O- '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
   Mając sudo, możesz to zrobić sam: apt-get install -y libatomic1
   i potem playwright install-deps firefox (obraz Playwrighta już je ma)."
 fi
