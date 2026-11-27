@@ -36,7 +36,7 @@ LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
 # version that actually shipped.  A VERSION file next to the script (i.e. a repo
 # checkout) wins over it -- checked with -r, because `< ./VERSION` would print a
 # shell error before any `2>/dev/null` could apply, and `| bash` has no $0 dir.
-VERSION="1.2.0"
+VERSION="1.2.1"
 version_file="$(dirname "${BASH_SOURCE[0]:-run.sh}")/VERSION"
 if [ -r "$version_file" ]; then
   VERSION="$(tr -d '[:space:]' < "$version_file")"
@@ -295,10 +295,14 @@ PY
 }
 
 # probe_http <url> — 0 when the URL answers, non-zero otherwise.
+# Every branch must send GET: the panel declares "GET" only, so a HEAD gets 405 and
+# a healthy panel would look dead.  `wget --spider` *is* a HEAD -- it reported
+# "panel nie odpowiedział w 120 s" on the doctor's wget-only Ubuntu while uvicorn
+# was logging that very probe.
 probe_http() {
   case "$DOWNLOADER" in
     curl) curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null ;;
-    wget) wget -q --timeout=2 --spider "$1" 2>/dev/null ;;
+    wget) wget -q --timeout=2 --tries=1 -O /dev/null "$1" 2>/dev/null ;;
     python3)
       python3 - "$1" "aspot-bot/$VERSION" <<'PY' 2>/dev/null
 import sys
