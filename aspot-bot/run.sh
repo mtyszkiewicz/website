@@ -30,7 +30,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=10
+VERSION=11
 
 WORK=""
 APP=""
@@ -497,5 +497,5 @@ fi
 step "cache: $CACHE ${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright} ${UV_CACHE_DIR:-$HOME/.cache/uv}"
 
 say ""
-say "  sesja wyczyszczona"
+say "  Gotowe."
 exit 0
