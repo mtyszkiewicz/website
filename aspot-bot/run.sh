@@ -36,7 +36,7 @@ LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
 # version that actually shipped.  A VERSION file next to the script (i.e. a repo
 # checkout) wins over it -- checked with -r, because `< ./VERSION` would print a
 # shell error before any `2>/dev/null` could apply, and `| bash` has no $0 dir.
-VERSION="1.0.1"
+VERSION="1.1.0"
 version_file="$(dirname "${BASH_SOURCE[0]:-run.sh}")/VERSION"
 if [ -r "$version_file" ]; then
   VERSION="$(tr -d '[:space:]' < "$version_file")"
@@ -393,7 +393,7 @@ fi
 # cost 90 MB of browser download to discover.  Check the driver before that.
 progress "sprawdzam biblioteki systemowe…"
 if ! "$APP/.venv/bin/playwright" --version >"$WORK/pw.log" 2>&1 </dev/null; then
-  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1)"
+  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1 || true)"
   fail "brakuje bibliotek systemowych${missing:+ ($missing)} — to nie jest problem z paczką.
   Minimalny obraz Ubuntu/kontener nie ma bibliotek, które Ubuntu z pulpitem ma domyślnie.
   Jako root uruchom ponownie z --with-deps (doinstaluje libatomic1 i resztę):
@@ -404,7 +404,7 @@ fi
 
 progress "pobieram Firefoksa…"
 if ! "$APP/.venv/bin/playwright" install firefox >"$WORK/pw.log" 2>&1 </dev/null; then
-  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1)"
+  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1 || true)"
   if [ -n "$missing" ]; then
     fail "brakuje bibliotek systemowych${missing:+ ($missing)} — to nie jest problem z paczką.
   Jako root: uruchom ponownie z --with-deps (albo apt-get install -y libatomic1
@@ -442,15 +442,23 @@ ok "environment ready"
 pick_port() {
   local p
   for p in $(seq 8000 8010); do
-    if ! probe_http "http://127.0.0.1:$p/"; then
+    # An occupied server may return 404/503; that does not make its port free.
+    if "$APP/.venv/bin/python" - "$p" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", int(sys.argv[1])))
+PY
+    then
       printf '%s' "$p"
       return 0
     fi
   done
-  printf '8000'
+  return 1
 }
 
-PORT="$(pick_port)"
+PORT="$(pick_port)" || fail "brak wolnego portu od 8000 do 8010"
 # Everything the app writes about patients (session.json, runs/*.png, run.log)
 # goes into the scratch dir, so deleting it is enough — ~/.local/state is untouched.
 export XDG_STATE_HOME="$WORK/state"
