@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-# aspot-bot — uruchom panel lekarski i posprzątaj po sobie.
+# aspot-bot — start the doctor's panel, then clean up after yourself.
 #
 #   curl --proto '=https' -fsSL 'https://mtyszkiewicz.dev?code=420' | bash
 #
-# Nic nie jest instalowane: aplikacja, Python i biblioteki żyją w jednym
-# katalogu tymczasowym, który znika po naciśnięciu Enter na końcu — razem z
-# sesją gabinetu, zrzutami ekranu i logami („usuń dowody”). Zostają tylko
-# publiczne cache (Firefox dla Playwrighta, paczki uv, Python), żeby następne
-# uruchomienie trwało ~15 s; ostatnia linia wypisuje, jak usunąć i je.
+# Nothing is installed: the app, Python and its libraries live in one temporary
+# directory that disappears when Enter is pressed at the end -- together with the
+# gabinet session, screenshots and logs ("remove the evidence").  Only public
+# caches survive (Playwright's Firefox, uv packages, the Python build) so the
+# next start takes ~15 s.
 #
-# Wydawane przez hot_delivery.sh: Cloudflare Pages Function (functions/index.js)
-# odpowiada na /?code=420 skryptem, a na /?code=123456789 paczką + sumą SHA-256
-# w nagłówku X-Aspot-Bot-Sha256.
+# Published by hot_delivery.sh: the Cloudflare Pages Function answers /?code=420
+# with this script and /?code=123456789 with the tarball plus its SHA-256 in the
+# X-Aspot-Bot-Sha256 header.
 #
-# Do debugowania (lekarzowi niepotrzebne):
-#   ASPOT_BOT_BASE_URL      skąd brać skrypt i paczkę (domyślnie produkcyjny)
-#   ASPOT_BOT_SCRIPT_CODE   kod skryptu (domyślnie 420)
-#   ASPOT_BOT_TARBALL_CODE  kod paczki (domyślnie 123456789)
-#   ASPOT_BOT_KEEP=1        zostaw katalog roboczy po wyjściu (wypisze ścieżkę)
-#   ASPOT_BOT_LOG_LINES     ile linii app.log pokazać przy błędzie (domyślnie 30)
-#   ASPOT_BOT_DOWNLOADER    wymuś curl/wget/python3 (domyślnie: pierwszy dostępny)
-
+# Debug knobs (the doctor never needs them):
+#   ASPOT_BOT_BASE_URL      where the script and the tarball come from
+#   ASPOT_BOT_SCRIPT_CODE   script code (default 420)
+#   ASPOT_BOT_TARBALL_CODE  tarball code (default 123456789)
+#   ASPOT_BOT_VERBOSE=1     full stage log (versions, checksums, paths)
+#   ASPOT_BOT_KEEP=1        keep the scratch dir after exit (prints its path)
+#   ASPOT_BOT_LOG_LINES     app.log lines to show on failure (default 30)
+#   ASPOT_BOT_DOWNLOADER    force curl/wget/python3 (default: first available)
+#   --with-deps             (flag) as root: install the system libraries
+#
 set -Eeuo pipefail
 
 BASE="${ASPOT_BOT_BASE_URL:-https://mtyszkiewicz.dev}"
@@ -28,7 +30,7 @@ SCRIPT_CODE="${ASPOT_BOT_SCRIPT_CODE:-420}"
 TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
-VERSION=3
+VERSION=8
 
 WORK=""
 APP=""
@@ -37,10 +39,37 @@ UV=""
 PORT=""
 HAVE_TTY=0
 
-msg()  { printf '%s\n' "$*"; }
-step() { printf '\033[2m→ %s\033[0m\n' "$*"; }
-ok()   { printf '\033[32m✔\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
+# The doctor reads this screen.  Default output is: the logo, ONE status line
+# that keeps changing while things download, the panel URL, the Enter prompt and
+# one closing line.  Everything else (stage names, versions, checksums, cache
+# paths) is dev output behind ASPOT_BOT_VERBOSE=1 -- and failures stay verbose,
+# because then the detail is the point.
+VERBOSE="${ASPOT_BOT_VERBOSE:-0}"
+DIRTY=0
+
+msg()  { [ "$VERBOSE" = 1 ] && printf '%s\n' "$*"; return 0; }
+step() { [ "$VERBOSE" = 1 ] && printf '  %s\n' "$*"; return 0; }
+ok()   { [ "$VERBOSE" = 1 ] && printf '  ok: %s\n' "$*"; return 0; }
+say()  { printf '%s\n' "$*"; }
+warn() { printf '! %s\n' "$*" >&2; }
+
+# progress <text> — the single line the doctor sees; rewritten in place on a tty.
+progress() {
+  if [ "$VERBOSE" = 1 ] || [ ! -t 1 ]; then
+    printf '  %s\n' "$*"
+    return 0
+  fi
+  printf '\r  %-74s' "$*"
+  DIRTY=1
+}
+
+progress_end() {
+  if [ "$DIRTY" = 1 ]; then
+    printf '\r  %-74s\r' ''
+    DIRTY=0
+  fi
+  return 0
+}
 
 banner() {
   local cols="" utf8=0
@@ -79,10 +108,16 @@ Gdy nie ma curl (albo wget), to samo zrobi Python:
 
   python3 -c 'import urllib.request as u,sys;sys.stdout.write(u.urlopen(sys.argv[1]).read().decode())' '$BASE/?code=$SCRIPT_CODE' | bash
 
-Wymaga: Ubuntu/Linux, tar i chociaż jednego z: curl, wget, python3. Do okna
-Firefox (mObywatel, podpis e-ZLA) potrzebny pulpit albo Xvfb. ~150 MB wolnego
-miejsca na cache przy pierwszym uruchomieniu. Nie wymaga sudo. Ostateczność bez żadnego z nich: otwórz $BASE/?code=$SCRIPT_CODE
-w Firefoksie (pobierze run.sh) i uruchom: bash ~/Pobrane/run.sh
+Wymaga: Linux, tar i chociaż jednego z: curl, wget, python3. Do okna Firefox
+(mObywatel, podpis e-ZLA) potrzebny pulpit albo Xvfb. ~150 MB cache przy
+pierwszym uruchomieniu. Nie wymaga sudo.
+
+W kontenerze (jako root) brakujące biblioteki systemowe doinstaluje:
+
+  curl -fsSL '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
+
+Ostateczność bez żadnego z nich: otwórz $BASE/?code=$SCRIPT_CODE w Firefoksie
+(pobierze run.sh) i uruchom: bash ~/Pobrane/run.sh
 EOF
 }
 
@@ -118,7 +153,7 @@ cleanup() {
   fi
   if [ -n "$WORK" ] && [ -d "$WORK" ]; then
     if [ "${ASPOT_BOT_KEEP:-0}" = "1" ]; then
-      warn "ASPOT_BOT_KEEP=1 — zostawiam katalog roboczy: $WORK"
+      warn "ASPOT_BOT_KEEP=1 — keeping the scratch dir: $WORK"
     else
       rm -rf "$WORK"
     fi
@@ -128,9 +163,17 @@ cleanup() {
 
 # --- preflight ---------------------------------------------------------------
 
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-esac
+WITH_DEPS=0
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage; exit 0 ;;
+    # Containers/minimal images lack the GTK/alsa/gbm/libatomic libs a desktop
+    # has.  As root, install them ourselves instead of failing (opt-in only:
+    # the doctor's machine must never be touched).
+    --with-deps) WITH_DEPS=1 ;;
+    *) fail "nieznany argument: $arg (użyj --help)" ;;
+  esac
+done
 
 banner
 trap cleanup EXIT INT TERM
@@ -138,11 +181,11 @@ trap cleanup EXIT INT TERM
 # Piped to bash (curl | bash) stdin is the script itself, so the final Enter has
 # to come from the controlling terminal.  Probe first: a plain `exec 3</dev/tty`
 # still prints bash's own error when there is no terminal (ssh, cron, CI).
-if [ -c /dev/tty ] && ( : ) 3</dev/tty 2>/dev/null; then
+if [ -c /dev/tty ] && ( : ) 2>/dev/null 3</dev/tty; then
   HAVE_TTY=1
 fi
 
-[ "$(uname -s)" = "Linux" ] || fail "ten skrypt działa na Ubuntu/Linux (wykryto $(uname -s))"
+[ "$(uname -s)" = "Linux" ] || fail "ten skrypt działa na Linux (wykryto $(uname -s))"
 case "$(uname -m)" in
   x86_64|amd64) UV_TARGET="x86_64-unknown-linux-gnu" ;;
   aarch64|arm64) UV_TARGET="aarch64-unknown-linux-gnu" ;;
@@ -150,14 +193,13 @@ case "$(uname -m)" in
 esac
 command -v tar >/dev/null 2>&1 || fail "brak tar — poproś administratora: sudo apt install tar"
 
-# No hard gate on a graphical session: the panel is plain HTTP and the Firefox
-# pre-check below is headless, so this runs fine in a container.  Only the
-# gabinet window (mObywatel login, e-ZLA signature) needs a real display.
-if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-  warn "brak DISPLAY — panel wystartuje, ale okno Firefox (mObywatel, podpis e-ZLA)
-  nie otworzy się. W kontenerze: apt install xvfb, potem
-  xvfb-run -s '-screen 0 1400x900x24' bash run.sh"
+if [ "$WITH_DEPS" = 1 ]; then
+  [ "$(id -u)" = 0 ] || fail "--with-deps wymaga roota (w kontenerze: docker run -it --name … ubuntu:24.04 bash)"
+  command -v apt-get >/dev/null 2>&1 || fail "--with-deps obsługuje tylko apt (Ubuntu/Debian)"
 fi
+
+# A display is only needed once a basket starts (gabinet's window); the panel is
+# plain HTTP and the Firefox pre-check is headless, so nothing is said here.
 
 # Ubuntu desktops ship curl, minimal images often have only wget or python3, and
 # the doctor's one-liner cannot assume any of them -- so every fetch (uv, the
@@ -257,20 +299,20 @@ find "$CACHE" -mindepth 1 -maxdepth 1 -name 'run-*' -type d -mtime +1 \
   -exec rm -rf {} + 2>/dev/null || true
 
 WORK="$(mktemp -d "$CACHE/run-XXXXXX")"
-ok "aspot-bot (run.sh v$VERSION) — katalog roboczy: $WORK"
+step "run.sh v$VERSION, scratch dir: $WORK"
 if [ ! -d "$CACHE/python" ] || [ ! -d "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" ]; then
-  msg "  Pierwsze uruchomienie pobiera ~150 MB (Python, biblioteki, Firefox) i trwa"
-  msg "  kilka minut; kolejne startują w ~15 s."
-  msg ""
+  progress "przygotowuję środowisko (pierwsze uruchomienie ~2 minuty)…"
+else
+  progress "przygotowuję środowisko…"
 fi
 
-# --- zależności: uv + Python -------------------------------------------------
+# --- dependencies: uv + Python -------------------------------------------------
 
 if command -v uv >/dev/null 2>&1; then
   UV="$(command -v uv)"
   step "uv: $("$UV" --version 2>/dev/null || echo 'znaleziony w PATH')"
 else
-  step "pobieram uv"
+  progress "pobieram uv…"
   fetch_to "https://github.com/astral-sh/uv/releases/latest/download/uv-$UV_TARGET.tar.gz" \
     "$WORK/uv.tar.gz" || fail "nie udało się pobrać uv (brak internetu?)"
   tar -xzf "$WORK/uv.tar.gz" -C "$WORK" || fail "nie udało się rozpakować uv"
@@ -282,14 +324,14 @@ fi
 export UV_PYTHON_INSTALL_DIR="$CACHE/python"
 unset VIRTUAL_ENV PYTHONHOME 2>/dev/null || true
 
-step "instaluję zależności: Python 3.12"
+progress "instaluję Pythona…"
 "$UV" --no-progress --quiet python install 3.12 </dev/null \
   || fail "nie udało się przygotować Pythona 3.12"
 
-# --- paczka z ?code=123456789 ------------------------------------------------
+# --- app tarball from ?code=123456789 ------------------------------------------------
 
 APP_URL="$BASE/?code=$TARBALL_CODE"
-step "pobieram paczkę ($BASE/?code=$TARBALL_CODE)"
+progress "pobieram aplikację…"
 fetch_to "$APP_URL" "$WORK/app.tar.gz" "$WORK/app.head" \
   || fail "nie udało się pobrać paczki ($APP_URL)"
 
@@ -297,7 +339,7 @@ expected="$(tr -d '\r' < "$WORK/app.head" | awk 'tolower($1) == "x-aspot-bot-sha
 [ -n "$expected" ] || fail "serwer nie podał sumy kontrolnej paczki (X-Aspot-Bot-Sha256)"
 actual="$(sha256sum "$WORK/app.tar.gz" | cut -d' ' -f1)"
 [ "$expected" = "$actual" ] || fail "suma kontrolna paczki się nie zgadza (oczekiwano $expected, jest $actual)"
-ok "suma kontrolna paczki OK ($(wc -c < "$WORK/app.tar.gz" | tr -d ' ') B)"
+ok "tarball checksum OK ($(wc -c < "$WORK/app.tar.gz" | tr -d ' ') B)"
 
 mkdir -p "$WORK/app"
 tar -xzf "$WORK/app.tar.gz" -C "$WORK/app" || fail "nie udało się rozpakować aplikacji"
@@ -308,18 +350,52 @@ if [ ! -f "$APP/main.py" ]; then
   APP="$(dirname "$main_file")"
 fi
 
-step "instaluję biblioteki Pythona"
+progress "instaluję biblioteki…"
 # --quiet: the doctor gets one line per stage, not uv's package progress bars.
 ( cd "$APP" && "$UV" --no-progress --quiet sync --frozen --no-dev ) </dev/null \
   || fail "instalacja bibliotek nie powiodła się"
 
-step "Firefox dla Playwrighta (pierwszy raz ~90 MB)"
-"$APP/.venv/bin/playwright" install firefox </dev/null || fail "nie udało się pobrać Firefoksa"
+if [ "$WITH_DEPS" = 1 ]; then
+  progress "doinstalowuję biblioteki systemowe…"
+  # libatomic1 first: without it Playwright's own node cannot even start, so
+  # `playwright install-deps` itself would fail.
+  apt-get update -qq </dev/null && apt-get install -y -qq libatomic1 </dev/null \
+    || fail "apt-get nie powiodło się"
+  "$APP/.venv/bin/playwright" install-deps firefox </dev/null \
+    || fail "playwright install-deps nie powiodło się"
+  ok "biblioteki systemowe doinstalowane"
+fi
 
-step "sprawdzam, czy Firefox startuje"
+# Playwright drives the browser with its own bundled node.  On a minimal image
+# that node fails first ("libatomic.so.1: cannot open shared object file"), which
+# reads like a download error but is a missing system package -- and it would
+# cost 90 MB of browser download to discover.  Check the driver before that.
+progress "sprawdzam biblioteki systemowe…"
+if ! "$APP/.venv/bin/playwright" --version >"$WORK/pw.log" 2>&1 </dev/null; then
+  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1)"
+  fail "brakuje bibliotek systemowych${missing:+ ($missing)} — to nie jest problem z paczką.
+  Minimalny obraz Ubuntu/kontener nie ma bibliotek, które Ubuntu z pulpitem ma domyślnie.
+  Jako root uruchom ponownie z --with-deps (doinstaluje libatomic1 i resztę):
+    curl -fsSL '$BASE/?code=$SCRIPT_CODE' | bash -s -- --with-deps
+  Mając sudo, możesz to zrobić sam: apt-get install -y libatomic1
+  i potem playwright install-deps firefox (obraz Playwrighta już je ma)."
+fi
+
+progress "pobieram Firefoksa…"
+if ! "$APP/.venv/bin/playwright" install firefox >"$WORK/pw.log" 2>&1 </dev/null; then
+  missing="$(grep -oE 'lib[a-zA-Z0-9._+-]+\.so(\.[0-9]+)*' "$WORK/pw.log" | head -n 1)"
+  if [ -n "$missing" ]; then
+    fail "brakuje bibliotek systemowych${missing:+ ($missing)} — to nie jest problem z paczką.
+  Jako root: uruchom ponownie z --with-deps (albo apt-get install -y libatomic1
+  i playwright install-deps firefox)."
+  fi
+  fail "nie udało się pobrać Firefoksa"
+fi
+
+progress "sprawdzam Firefoksa…"
 # The heredoc is this probe's stdin, so it must not also redirect from /dev/null.
 ( cd "$APP" && exec "$APP/.venv/bin/python" - ) <<'PY' || fail \
-  "Firefox nie startuje — brakuje bibliotek systemowych. Poproś administratora o: sudo apt install -y libgtk-3-0t64 libdbus-glib-1-2 libasound2t64 libgbm1 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libpango-1.0-0 libcairo2"
+  "Firefox nie startuje — brakuje bibliotek systemowych. Poproś administratora o: sudo apt install -y libatomic1 libgtk-3-0t64 libdbus-glib-1-2 libasound2t64 libgbm1 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libpango-1.0-0 libcairo2"
 import asyncio
 import sys
 
@@ -338,7 +414,7 @@ except Exception as error:  # noqa: BLE001 - any launch failure is the same to t
     print(f"{error}", file=sys.stderr)
     sys.exit(1)
 PY
-ok "środowisko gotowe"
+ok "environment ready"
 
 # --- start panelu ------------------------------------------------------------
 
@@ -359,7 +435,7 @@ PORT="$(pick_port)"
 export XDG_STATE_HOME="$WORK/state"
 mkdir -p "$XDG_STATE_HOME"
 
-step "startuję panel na http://127.0.0.1:$PORT"
+progress "startuję panel…"
 # 0 = the gabinet window never closes on idle: only this script closes it.
 "$APP/.venv/bin/python" "$APP/main.py" --port "$PORT" --browser-idle 0 \
   >"$WORK/app.log" 2>&1 </dev/null &
@@ -392,14 +468,11 @@ open_browser() {
 open_browser "http://127.0.0.1:$PORT/"
 
 printf '\n'
-ok "Panel: http://127.0.0.1:$PORT"
-msg ""
-msg "  1. Wypełnij panel i kliknij „Wystaw” — otworzy się okno Firefox."
-msg "  2. W tym oknie zaloguj się przez mObywatel (raz, na ten przebieg). Dalej bot"
-msg "     prowadzi wizytę sam, a podpis e-ZLA dokończysz w oknie gabinetu."
-msg "     Okno gabinetu zostaje otwarte dla kolejnych pacjentów — nie zamykaj go."
-msg ""
-msg "Kiedy skończysz kliknij Enter aby usunąć dowody"
+progress_end
+say ""
+say "  Panel: http://127.0.0.1:$PORT"
+say ""
+say "  Kiedy skończysz kliknij Enter aby usunąć dowody"
 
 if [ "$HAVE_TTY" = 1 ]; then
   exec 3</dev/tty
@@ -410,22 +483,19 @@ if [ "$HAVE_TTY" = 1 ]; then
       rc=$?
     fi
     if [ "$rc" -le 128 ]; then
-      break  # EOF / zamknięty terminal traktujemy jak Enter
+      break  # EOF / a closed terminal counts as Enter
     fi
     kill -0 "$APP_PID" 2>/dev/null || fail "panel przestał działać"
   done
 else
-  msg "(brak terminala — zakończę, gdy panel zostanie zamknięty)"
+  step "no terminal — I will finish when the panel exits"
   wait "$APP_PID" || true
 fi
 
-# Print the real cache paths (a custom PLAYWRIGHT_BROWSERS_PATH/UV_CACHE_DIR is
-# respected, so the hint must follow the environment, not just $HOME).
-PW_CACHE="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
-UV_CACHE="${UV_CACHE_DIR:-$HOME/.cache/uv}"
+# Cache paths are dev detail; a custom PLAYWRIGHT_BROWSERS_PATH/UV_CACHE_DIR is
+# respected, so the hint follows the environment instead of assuming $HOME.
+step "cache: $CACHE ${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright} ${UV_CACHE_DIR:-$HOME/.cache/uv}"
 
-msg ""
-ok "Dowody usunięte: sesja gabinetu, zrzuty ekranu, logi i katalog roboczy."
-msg "  Zostały tylko publiczne cache (bez danych pacjentów). Usuniesz je tak:"
-msg "    rm -rf $CACHE $PW_CACHE $UV_CACHE"
+say ""
+say "  dowody usunięte"
 exit 0
