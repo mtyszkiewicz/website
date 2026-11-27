@@ -36,7 +36,7 @@ LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
 # version that actually shipped.  A VERSION file next to the script (i.e. a repo
 # checkout) wins over it -- checked with -r, because `< ./VERSION` would print a
 # shell error before any `2>/dev/null` could apply, and `| bash` has no $0 dir.
-VERSION="1.1.1"
+VERSION="1.2.0"
 version_file="$(dirname "${BASH_SOURCE[0]:-run.sh}")/VERSION"
 if [ -r "$version_file" ]; then
   VERSION="$(tr -d '[:space:]' < "$version_file")"
