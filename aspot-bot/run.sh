@@ -31,14 +31,18 @@ TARBALL_CODE="${ASPOT_BOT_TARBALL_CODE:-123456789}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aspot-bot"
 LOG_LINES="${ASPOT_BOT_LOG_LINES:-30}"
 
-# Semantic version of what is being delivered.  hot_delivery.sh bakes the real
-# value in when it publishes this script (it replaces the placeholder below), so
-# the doctor sees the version that actually shipped.  When this file is run
-# straight from the repo the VERSION next to it is read instead.
-VERSION="1.0.0"
-if [ "$VERSION" = "1.0.0" ]; then
-  VERSION="$(tr -d '[:space:]' < "$(dirname "$0")/VERSION" 2>/dev/null || true)"
-  VERSION="${VERSION:-dev}"
+# Semantic version of what is being delivered.  hot_delivery.sh rewrites the
+# assignment line below when it publishes this script, so the doctor sees the
+# version that actually shipped.  A VERSION file next to the script (i.e. a repo
+# checkout) wins over it -- checked with -r, because `< ./VERSION` would print a
+# shell error before any `2>/dev/null` could apply, and `| bash` has no $0 dir.
+VERSION="1.0.1"
+version_file="$(dirname "${BASH_SOURCE[0]:-run.sh}")/VERSION"
+if [ -r "$version_file" ]; then
+  VERSION="$(tr -d '[:space:]' < "$version_file")"
+fi
+if [ "$VERSION" = "__ASPOT_VERSION__" ]; then
+  VERSION="dev"  # a copy of this script that nobody published and without VERSION
 fi
 
 WORK=""
@@ -67,7 +71,9 @@ progress() {
     printf '  %s\n' "$*"
     return 0
   fi
-  printf '\r  %-74s' "$*"
+  # Erase to end of line instead of padding to a fixed width: a padded line wraps
+  # on a narrow terminal and the next line then looks wrongly indented.
+  printf '\r  %s\033[K' "$*"
   DIRTY=1
 }
 
